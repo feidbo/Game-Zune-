@@ -1,7 +1,7 @@
 From 269f5057d452ef571ca583443dadd9f9eb3c0593 Mon Sep 17 00:00:00 2001
 From: Game Zune <noreply@example.com>
 Date: Mon, 12 Oct 2026 19:31:51 +0000
-Subject: [PATCH 2/2] Muse: playlists from Playlists/*.m3u, as a third pivot
+Subject: [PATCH 2/3] Muse: playlists from Playlists/*.m3u, as a third pivot
 
 ---
  src/main.c    |  76 +++++++++++++++---

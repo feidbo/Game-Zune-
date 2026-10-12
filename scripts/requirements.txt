@@ -1,0 +1,4 @@
+mutagen>=1.45
+pillow>=9
+# optional: listens to songs whose tempo no database knows
+# librosa>=0.10

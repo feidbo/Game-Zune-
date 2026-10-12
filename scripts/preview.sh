@@ -61,7 +61,7 @@ demo_card() {
 	album "Boards of Canada" "Music Has the Right" "#40a0a0" 3
 	album "The Postal Service" "Give Up" "#5070e0" 3
 	album "Daft Punk" "Random Access Memories" "#c0a060" 3
-	# Two playlists, the way scripts/moodlists.py writes them, with covers.
+	# Two playlists, the way scripts/zunesync.py writes them, with covers.
 	mkdir -p "$c/Playlists/.media"
 	printf '#EXTM3U\n../Music/Boards of Canada/Music Has the Right/01 - Track 1.mp3\n../Music/Radiohead/In Rainbows/02 - Track 2.mp3\n../Music/The Postal Service/Give Up/01 - Track 1.mp3\n' \
 		> "$c/Playlists/chill.m3u8"
@@ -71,13 +71,44 @@ demo_card() {
 	        -annotate +20+20 chill "$c/Playlists/.media/chill.jpg"
 	convert -size 500x500 xc:"#ff6020" -fill white -pointsize 110 -gravity southwest \
 	        -annotate +20+20 party "$c/Playlists/.media/party.jpg"
+	# What scripts/zunesync.py would write: titles, genres, years, lengths,
+	# and a few plays and ratings as the Pixel 2 would have logged them.
+	python3 - "$c" <<'PY'
+import os, sys, time
+card = sys.argv[1]
+info = {"Daft Punk": ("Electronic", {"Discovery": 2001, "Random Access Memories": 2013}),
+        "Radiohead": ("Alternative Rock", {"In Rainbows": 2007}),
+        "Boards of Canada": ("Electronic", {"Music Has the Right": 1998}),
+        "The Postal Service": ("Indie Pop", {"Give Up": 2003})}
+titles = {"Discovery": ["One More Time", "Aerodynamic", "Digital Love", "Harder, Better, Faster, Stronger"],
+          "Random Access Memories": ["Give Life Back to Music", "The Game of Love", "Giorgio by Moroder"],
+          "In Rainbows": ["15 Step", "Bodysnatchers", "Nude", "Weird Fishes/Arpeggi"],
+          "Music Has the Right": ["Wildlife Analysis", "An Eagle in Your Mind", "The Color of the Fire"],
+          "Give Up": ["The District Sleeps Alone Tonight", "Such Great Heights", "Sleeping In"]}
+rows, paths = ["#zune-index 1"], []
+for artist, (genre, albums) in info.items():
+    for album, year in albums.items():
+        d = os.path.join(card, "Music", artist, album)
+        for i, f in enumerate(sorted(x for x in os.listdir(d) if x.endswith(".mp3"))):
+            rel = "Music/%s/%s/%s" % (artist, album, f)
+            paths.append(rel)
+            rows.append("\t".join([rel, titles[album][i], artist, album, genre, str(year),
+                                   str(180 + i * 37), str(i + 1), str(100 + i * 7), genre.lower()]))
+z = os.path.join(card, "Music", ".zune")
+os.makedirs(z, exist_ok=True)
+open(os.path.join(z, "library.tsv"), "w").write("\n".join(rows) + "\n")
+now = int(time.time())
+open(os.path.join(z, "plays.log"), "w").write(
+    "".join("%d\t%s\n" % (now - 3600 * k, p) for k, p in enumerate([paths[5], paths[1], paths[9]])))
+open(os.path.join(z, "ratings.tsv"), "w").write("%s\t1\n" % paths[2])
+PY
 }
 
 if [ -n "${CARD:-}" ]; then
 	C=$CARD
 else
 	C=$WORK/demo-card
-	[ -d "$C/Playlists" ] || demo_card "$C"
+	[ -f "$C/Music/.zune/library.tsv" ] || demo_card "$C"
 fi
 # A private TortOS folder to run from, so a real card is only ever read.
 RUN=$WORK/preview-root
@@ -104,7 +135,16 @@ shot hub            --sys 2
 shot hub-music      --sys 3
 shot games          --sys 2 --screen games
 shot albums         --sys 3 --screen games
-shot playlists      --sys 3 --screen games --sort 2
+shot playlists      --sys 3 --zmusic playlists
 shot now-playing    --nowplaying 2 1 41
+# The music collection, the Zune's way.
+shot music-artists  --sys 3 --zmusic artists
+shot music-albums   --sys 3 --zmusic albums
+shot music-songs    --sys 3 --zmusic songs
+shot music-genres   --sys 3 --zmusic genres
+shot music-artist   --sys 3 --zmusic artist:1
+shot music-album    --sys 3 --zmusic album:0
+shot music-jump     --sys 3 --zmusic songs+jump
+shot music-options  --sys 3 --zmusic albums+menu
 shot menu           --sys 2 --screen games --menu 1
 echo "screenshots in $OUT"

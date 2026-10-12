@@ -6,9 +6,11 @@ player and music player, with box art, album art, and a **Zune HD interface**.
 It is [TortOS](https://github.com/ericreinsmidt/TortOS) (games + music + art, offline)
 with a Zune theme added to its launcher.
 
-| Hub | Games | Albums | Mood playlists | Now playing |
+| Hub | Games | Music | Album | Now playing |
 |---|---|---|---|---|
-| ![hub](docs/screenshots/hub.png) | ![games](docs/screenshots/games.png) | ![albums](docs/screenshots/albums.png) | ![playlists](docs/screenshots/playlists.png) | ![now playing](docs/screenshots/now-playing.png) |
+| ![hub](docs/screenshots/hub-music.png) | ![games](docs/screenshots/games.png) | ![music](docs/screenshots/music-artists.png) | ![album](docs/screenshots/music-album.png) | ![now playing](docs/screenshots/now-playing.png) |
+| **Playlists** | **Genres** | **Artist** | **Jump list** | **Options** |
+| ![playlists](docs/screenshots/playlists.png) | ![genres](docs/screenshots/music-genres.png) | ![artist](docs/screenshots/music-artist.png) | ![jump list](docs/screenshots/music-jump.png) | ![options](docs/screenshots/music-options.png) |
 
 *(Screenshots are from the desktop build of the launcher with a demo card. It draws the
 same thing the handheld draws, at 1024×768; the Pixel 2 shows it at 640×480.)*
@@ -26,11 +28,28 @@ same thing the handheld draws, at 1024×768; the Pixel 2 shows it at 640×480.)*
 - **Game lists:** a huge heading that runs off the screen, with **pivots** for the sort order
   (`name · play time · last played · recently added`). Below them is a list of box art and titles.
   The selected title is in Zune magenta.
-- **Music:** the same list for albums, with covers and artists. Pivots switch between artist order,
-  album order and **playlists**, including mood playlists made from your own library
-  (see [Playlists, by mood](#5-playlists-by-mood)).
-- **Now playing:** the artist's name drifts enormous across the top, like on the Zune HD.
-  Below it are the cover, the track, a magenta progress line and what plays next.
+- **Music, laid out like the Zune HD's collection:**
+  - pivots for **artists · albums · songs · playlists · genres** (and audiobooks if you have any);
+  - an **artist** page with their albums (by year) and songs;
+  - an **album** page with the cover and a numbered track list with lengths;
+  - **genre** pages;
+  - **shuffle all** at the top of songs;
+  - the **jump list** (letter tiles, lit where there is something under them);
+  - an **options** menu on anything: play, shuffle, add to now playing, play next, smart dj,
+    like / dislike.
+- **Smart DJ:** a mix of songs like an artist, album or song, built on the device from genres,
+  tags, era and tempo.
+- **Ratings:** a heart or a broken heart on any song. Disliked songs are left out of Smart DJ and
+  of every auto playlist.
+- **Quickplay on the hub:** with **music** selected, **history** (what you played last) and
+  **new** (what you added last) sit beside it. Press right to reach them.
+- **Now playing:**
+  - the artist's name drifts enormous across the top over a blurred copy of the cover;
+  - the cover, the track, your rating, a magenta progress line and what plays next;
+  - **down** opens the now-playing list.
+- **Auto playlists** built from public music databases: chill, workout, dark wave, nostalgia,
+  jazzy, party, crowd pleaser, heavy rotation and discover
+  (see [Auto playlists](#5-auto-playlists)).
 - **Menus** switch to the same typeface, with flat black panels and a magenta accent.
 - The font is [Selawik](https://github.com/microsoft/Selawik), Microsoft's open-source
   stand-in for Segoe, the Zune's typeface family.
@@ -40,15 +59,17 @@ autosave/resume, favorites, Down To The Wire for files and art over USB.
 
 ### Controls on the Zune theme
 
-| Button | Does |
-|---|---|
-| Up / Down | Move |
-| Left / Right | Jump by letter |
-| L1 / R1 | Change pivot (sort order) |
-| A / B | Open or play / back |
-| X / Y | Game details / favorite |
-| SELECT | Music (from anywhere) |
-| MENU | TortOS menu (UI Theme is in here) |
+| Button | Games | Music |
+|---|---|---|
+| Up / Down | Move | Move |
+| Left / Right | Jump by letter | **Pivots** |
+| L1 / R1 | Change pivot (sort order) | Page up / down (on Now Playing: track) |
+| A / B | Open or play / back | Open or play / back |
+| X | Game details | **Options** (on Now Playing: rate) |
+| Y | Favorite | **Jump list** (on Now Playing: shuffle/repeat) |
+| START | — | Now playing |
+| SELECT | Music (from anywhere) | Close music |
+| MENU | TortOS menu (UI Theme is in here) | Music menu (rescan, lock screen…) |
 
 ---
 
@@ -152,52 +173,66 @@ fetches what is missing.
 Covers embedded in the files are found by themselves. The first time an album shows, Muse pulls
 its picture out of the music.
 
-### 5. Playlists, by mood
+### 5. Auto playlists
 
-The music player has a **playlists** pivot. Go to **music**, then use **L1/R1** to move from
-**artist** and **album** to **playlists**. It shows every `.m3u` / `.m3u8` file in the card's
-`Playlists/` folder, each with its own cover.
+Under **music → playlists**, next to any playlists of your own, are nine made for you:
 
-![playlists](docs/screenshots/playlists.png)
+| Playlist | What goes in it | Where that comes from |
+|---|---|---|
+| **chill** | soft, slow songs, but not slow-jam / sensual R&B | genre and mood tags (MusicBrainz, Last.fm); tempo (Deezer); R&B, neo-soul, quiet storm etc. are excluded |
+| **workout** | the highest-BPM songs (125+), ordered to build up | tempo from Deezer or the file's tags |
+| **dark wave** | darkwave, coldwave, synth-pop, new wave, post-punk: the 80s sound | genres + first-release year (1978–92 favoured) |
+| **nostalgia** | songs first released 1998–2010, best known first, no classical / jazz / instrumentals | MusicBrainz first-release year; ListenBrainz popularity |
+| **jazzy** | jazz of every kind | genres |
+| **party** | europop and eurodance | genres + tempo |
+| **crowd pleaser** | songs that reached the **Billboard Hot 100 top 50** | the public Hot 100 archive ([utdata/rwd-billboard-data](https://github.com/utdata/rwd-billboard-data)) |
+| **heavy rotation** | your most played | play counts the Pixel 2 now keeps, plus your Last.fm scrobbles if you add them |
+| **discover** | what you play least and the world listens to least (changes daily) | your play counts + ListenBrainz/Deezer popularity |
 
-**Mood playlists made for you.** [`scripts/moodlists.py`](scripts/moodlists.py) runs on your
-computer with the card plugged in. It listens to a minute of every song and measures:
-
-- tempo
-- energy
-- brightness
-- major or minor key
-- how danceable it is
-- how busy it is
-
-Then it writes seven playlists with Zune-style covers:
-
-**chill · focus · energy · happy · rainy day · late night · party**
+They are made on your computer by [`scripts/zunesync.py`](scripts/zunesync.py), with the card plugged in:
 
 ```sh
-pip install -r scripts/requirements-moods.txt      # librosa, mutagen, pillow (+ ffmpeg for m4a/opus)
-python3 scripts/moodlists.py /Volumes/TORTOS       # Windows: python scripts\moodlists.py E:\
+pip install -r scripts/requirements.txt              # mutagen, pillow
+python3 scripts/zunesync.py /Volumes/TORTOS          # Windows: python scripts\zunesync.py E:\
 ```
 
-- **Moods are relative to your library.** "chill" is the calmest part of what *you* own.
-- **Tags can steer it.**
-  - A song's **MOOD** tag (set it in Mp3tag or Picard: `chill`, `happy`, `sad`, `workout`, `party`…)
-    puts it in that playlist whatever it sounds like.
-  - The **GENRE** tag nudges the guess (ambient leans chill, house leans party, and so on).
-- **Smart DJ mixes:** `--mix "sunday morning=Boards of Canada"` makes a playlist of the songs
-  that sound most like an artist, album or song. Repeat `--mix` for as many as you like.
-- **Size:** each playlist gets up to `--size 40` songs. A song goes in at most its two best moods,
-  so the playlists differ from one another. Each one is ordered by tempo, and the same artist is
-  not played twice in a row.
-- **Re-running:**
-  - The first run takes a while (roughly a second or two per song, using all your cores).
-  - What it heard is cached in `Playlists/.moods/`, so a re-run after adding music only listens to the new songs.
-  - It only ever replaces playlists it wrote itself.
+What it does:
+
+1. Reads each song's tags: artist, title, year, genre, any BPM or MOOD tag, and the MusicBrainz
+   IDs if Picard tagged it.
+2. Looks each song up in free public databases:
+   - **[MusicBrainz](https://musicbrainz.org)**: first-release year, genres and tags.
+   - **[ListenBrainz](https://listenbrainz.org)**: how many people listen to it.
+   - **[Deezer](https://developers.deezer.com)**: tempo (BPM), popularity, release date.
+   - **Billboard Hot 100 history**: chart peaks.
+   - **[Last.fm](https://www.last.fm/api)**, optional: the best "vibe" tags. Get a free key at
+     <https://www.last.fm/api/account/create> and add
+     `--lastfm-key YOURKEY --lastfm-user YOURNAME` (the user part also counts your scrobbles in
+     heavy rotation).
+3. Reads what the **Pixel 2 recorded**: every song you listened to for 30 seconds or half its
+   length is logged to `Music/.zune/plays.log`, and your hearts to `ratings.tsv`.
+4. Writes the nine playlists with Zune-style covers. It also writes `Music/.zune/library.tsv`,
+   which gives the Pixel 2 real song titles, genres (the **genres** pivot), years, lengths and
+   tags (for Smart DJ).
+
+Things to know:
+
+- **The first run is slow, on purpose.** MusicBrainz asks for one request a second, so expect
+  about one to two seconds per song. Everything is cached in `Music/.zune/lookup.json`, so later
+  runs only look up new songs.
+- **Listening is only a fallback.** If no database or tag knows a song's tempo and `librosa` is
+  installed, it analyses a minute of the song for BPM. That is the only listening it does.
+- **Tags help.** A song tagged with a **MOOD** (`chill`, `workout`, `party`, `jazz`) in Mp3tag or
+  Picard goes into that playlist whatever the databases say. Picard tagging also gives exact
+  MusicBrainz matches.
+- **Re-run it** after adding music or listening for a while, so heavy rotation and discover
+  catch up. `--offline` rebuilds from the cache alone, and `--only "chill,party"` makes just those.
+- It only replaces playlists it wrote. A song you **disliked** on the Pixel 2 is in none of them.
 
 **Your own playlists** work too. Export an `.m3u` from iTunes/Music, foobar2000, MusicBee or
 VLC into `Playlists/`. Muse finds each song on the card by the `Music/…` part of its path, so
 `C:\Users\you\Music\Artist\Album\song.mp3` still works. If yours point somewhere else,
-`python3 scripts/moodlists.py /Volumes/TORTOS --fix-playlists` repoints them at the card's
+`python3 scripts/zunesync.py /Volumes/TORTOS --fix-playlists` repoints them at the card's
 copies by file name (the original is kept as `.bak`). Give a playlist a cover by saving a
 picture as `Playlists/.media/<playlist name>.jpg`. Otherwise it uses its first song's album art.
 
@@ -254,7 +289,7 @@ CARD=/media/$USER/TORTOS scripts/preview.sh   # your own games and music (read o
   - Hooks the theme into the shelves, the Muse album shelf and Now Playing.
   - Makes the list navigation run top to bottom, with L1/R1 as pivots. The sort-step code now lives in
     one shared function, used by both the menu and the pivots.
-  - Adds `--theme`, `--sys` and `--sort` to the screenshot harness.
+  - Adds `--theme`, `--sys`, `--sort` and `--zmusic` to the screenshot harness.
 - `src/ui.c`, `src/ui.h`: switching the menu typeface at runtime, and flat panels.
 - `src/cards.h`: *Zune* as a third UI Theme, and the default.
 - `src/controls.*`: a Controls page for the Zune layout.
@@ -262,8 +297,18 @@ CARD=/media/$USER/TORTOS scripts/preview.sh   # your own games and music (read o
   live in other albums' folders. Each has its own cover location, and they are shown under a third
   shelf order, *Playlists*. Paths are resolved relative to the playlist, the card, or the `Music/`
   folder in a path from another computer, and never outside the card.
+- Third patch, the Zune music:
+  - `src/zune_music.h` (new, included into `main.c`): the collection's pages, the jump list, the
+    options menu, Smart DJ, quickplay and the now-playing list. It also reads `library.tsv`,
+    `plays.log` and `ratings.tsv`.
+  - `src/musec.*`, `src/musequeue.*`: counting a listen (30 s or half the song, seeking excluded),
+    adding to the queue without interrupting it, and jumping within it.
+  - `src/zune.*`: text and track rows, hearts, the jump-list tiles and the options menu.
+  - `src/device/brick.c`: the rest of the pad on the desktop build's keyboard, for driving it in tests.
 
-TortOS's own offline checks (`make check`) pass with the patch applied.
+TortOS's own offline checks (`make check`) pass with the patches applied.
+`python3 -m unittest discover -s scripts/tests` tests the playlist rules against a fake web and
+the Billboard data (set `BILLBOARD_CSV` to a downloaded `hot-100-current.csv` to use the real archive).
 
 ---
 
