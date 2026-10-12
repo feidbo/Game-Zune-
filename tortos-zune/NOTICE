@@ -1,0 +1,9 @@
+The patch in patches/ modifies TortOS (https://github.com/ericreinsmidt/TortOS),
+which is MIT licensed, Copyright (c) 2026 Eric Reinsmidt. The patch, and the
+launcher built from it in dist/TortOS/tortos.elf, are offered under the same
+MIT terms, so the theme can be contributed upstream. TortOS's license and
+THIRD-PARTY-LICENSES.md apply to the built launcher.
+
+fonts/ holds Selawik (https://github.com/microsoft/Selawik), Copyright 2015
+Microsoft Corporation, under the SIL Open Font License 1.1 (OFL-Selawik.txt),
+renamed zune-*.ttf so the launcher can find each weight.

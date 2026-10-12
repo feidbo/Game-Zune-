@@ -1,0 +1,1478 @@
+From d0f5466742cfebb79e1e122a53a0d34815e52be7 Mon Sep 17 00:00:00 2001
+From: Game Zune <noreply@example.com>
+Date: Mon, 12 Oct 2026 18:02:56 +0000
+Subject: [PATCH] Add the Zune theme
+
+---
+ src/cards.h            |  13 +-
+ src/controls.c         |   7 +
+ src/controls.h         |   2 +-
+ src/main.c             | 406 ++++++++++++++++++++++++++++++-----
+ src/ui.c               |  52 +++++
+ src/ui.h               |   6 +
+ src/zune.c             | 471 +++++++++++++++++++++++++++++++++++++++++
+ src/zune.h             | 132 ++++++++++++
+ tools/controls-check.c |   6 +-
+ 9 files changed, 1031 insertions(+), 64 deletions(-)
+ create mode 100644 src/zune.c
+ create mode 100644 src/zune.h
+
+diff --git a/src/cards.h b/src/cards.h
+index e1b61bd..d267ad4 100644
+--- a/src/cards.h
++++ b/src/cards.h
+@@ -63,12 +63,21 @@ typedef struct {
+ 	 * a console is an object above the surface, and the gap is what says so.
+ 	 * Applies to system art only: box art is card-like whatever the theme. */
+ 	float reflect_gap;
++	/* Not a set of cards at all: the Zune HD's look, which draws the shelves
++	 * as lists of words and art (src/zune.c). It still names a directory,
++	 * because a system's card is still what other screens fall back to. */
++	bool zune;
+ } card_set;
+ 
+ static const card_set CARD_SETS[] = {
+-	{ "classic", "classic", "Plain Jane",  true,  0.00f },
+-	{ "fancy",   "fancy",   "Fancy Pants", false, 0.21f },   /* about 50px */
++	{ "classic", "classic", "Plain Jane",  true,  0.00f, false },
++	{ "fancy",   "fancy",   "Fancy Pants", false, 0.21f, false },   /* about 50px */
++	{ "zune",    "classic", "Zune",        true,  0.00f, true  },
+ };
++
++/* What an untouched device shows. Separate from CARDS_DEFAULT, which is also
++ * the directory art falls back to and has to stay a real set of cards. */
++#define CARDS_SETTING_DEFAULT "zune"
+ #define CARD_SET_COUNT ((int)(sizeof CARD_SETS / sizeof CARD_SETS[0]))
+ 
+ /* The set a stored name selects, by index. An unknown name is the default
+diff --git a/src/controls.c b/src/controls.c
+index 336c022..f5556a9 100644
+--- a/src/controls.c
++++ b/src/controls.c
+@@ -47,6 +47,13 @@ static int moving(ctl_dir dir, menu_row *out)
+ 	if (dir == CTL_CUBIC) {
+ 		out[n++] = (menu_row){ "Up/Down",    "Console",        false };
+ 		out[n++] = (menu_row){ "Left/Right", "Game",           false };
++	} else if (dir == CTL_ZUNE) {
++		/* The Zune theme's lists: down is next, and the shoulders swing
++		 * the pivots, which are the shelf's sort orders. */
++		out[n++] = (menu_row){ "Up/Down",    "Move",           false };
++		out[n++] = (menu_row){ "Left/Right", "Jump by letter", false };
++		out[n++] = (menu_row){ "L1/R1",      "Sort (pivots)",  false };
++		return n;
+ 	} else if (dir == CTL_VERTICAL) {
+ 		out[n++] = (menu_row){ "Up/Down",    "Move",           false };
+ 		out[n++] = (menu_row){ "Left/Right", "Jump by letter", false };
+diff --git a/src/controls.h b/src/controls.h
+index 26525a1..bf5cecc 100644
+--- a/src/controls.h
++++ b/src/controls.h
+@@ -34,7 +34,7 @@ typedef enum {
+ } ctl_page;
+ 
+ /* Which way the shelves run - UI Direction, as cards.h stores it. */
+-typedef enum { CTL_HORIZONTAL, CTL_VERTICAL, CTL_CUBIC } ctl_dir;
++typedef enum { CTL_HORIZONTAL, CTL_VERTICAL, CTL_CUBIC, CTL_ZUNE } ctl_dir;
+ 
+ /* Room for the longest page and its footer, with a little spare. */
+ #define CTL_MAX_ROWS 10
+diff --git a/src/main.c b/src/main.c
+index 6ae0cad..70c70f4 100644
+--- a/src/main.c
++++ b/src/main.c
+@@ -51,6 +51,7 @@
+ #include "game_menu.h"
+ #include "ui.h"
+ #include "wifi_menu.h"
++#include "zune.h"
+ 
+ #include <SDL.h>
+ #include <SDL_image.h>
+@@ -443,6 +444,46 @@ static SDL_Texture *load_image(SDL_Renderer *r, const char *path, int *w, int *h
+ static int g_cards;
+ static int g_dir;
+ 
++/* The Zune theme is a card set in the menu, but it is more than art: it lays
++ * both shelves out as lists, so it decides the direction too. A list runs
++ * down the screen, which is Vertical's input axis - with down as next, the
++ * way a page reads, rather than Vertical's stack that grows upward. Cubic is
++ * off while it is on: there is no cube in a list. */
++static bool zune_ui(void)      { return CARD_SETS[g_cards].zune; }
++static bool dir_both(void)     { return !zune_ui() && CARD_DIRS[g_dir].both; }
++static bool dir_vertical(void) { return zune_ui() || CARD_DIRS[g_dir].vertical; }
++/* The d-pad along a shelf: back and forward, and the letter jump across it. */
++static void shelf_keys(in_button *back, in_button *fwd, in_button *jup, in_button *jdn)
++{
++	bool vert = dir_vertical();
++
++	*back = zune_ui() ? IN_UP   : vert ? IN_DOWN : IN_LEFT;
++	*fwd  = zune_ui() ? IN_DOWN : vert ? IN_UP   : IN_RIGHT;
++	*jup  = vert ? IN_LEFT  : IN_UP;
++	*jdn  = vert ? IN_RIGHT : IN_DOWN;
++}
++
++/* The face every menu and panel is set in: the Zune's own on the Zune theme,
++ * so a menu opened over its lists does not change typeface under you, and
++ * the launcher's everywhere else - or when the card has no Zune fonts. */
++static const char *theme_font(void)
++{
++	static char path[CFG_STR * 2];
++
++	if (!zune_ui()) return P_FONT;
++	snprintf(path, sizeof path, "%s/fonts/zune-regular.ttf", P_ROOT);
++	return access(path, R_OK) == 0 ? path : P_FONT;
++}
++
++/* Bring the menus in line with the theme: its face, and flat panels or lit
++ * ones. After the fonts open and whenever the theme changes. */
++static void theme_apply(app *a)
++{
++	ui_set_flat(zune_ui());
++	ui_set_font(theme_font());
++	a->menu_w = 0;             /* another face: remeasure the panel */
++}
++
+ /* Muse: what the Music folder holds, read at boot and on every rescan, and
+  * the green its card is drawn in - the iPod's own, sampled from the photograph
+  * (tools/genmusecard.py draws both cards from the same value).
+@@ -2761,6 +2802,7 @@ static void redraw_now(void)    { g_redraw_at = 0; }
+ static void draw_background(app *a)
+ {
+ 	SDL_Renderer *r = a->r;
++	if (zune_ui()) { zune_clear(r); return; }
+ 	SDL_SetRenderDrawColor(r, UI_BG_R, UI_BG_G, UI_BG_B, 255);
+ 	SDL_RenderClear(r);
+ 	/* A wash of the focused system's color along the bottom edge, so the
+@@ -2793,12 +2835,12 @@ static void shelf_pacing(coverflow *cf)
+ 	 * slower smoothed chase is what a turning solid needs. The two share the
+ 	 * `.vertical` flag because they share an INPUT axis, which is a different
+ 	 * question from how they are drawn. */
+-	if (CARD_DIRS[g_dir].both) {
++	if (dir_both()) {
+ 		cf->anim_ms = 450.0f;
+ 		cf->ease = CF_EASE_SMOOTH;
+ 		cf->chase = true;
+ 		cf->glide = 0.0f;      /* chase already holds pos within a step */
+-	} else if (CARD_DIRS[g_dir].vertical) {
++	} else if (dir_vertical() && !zune_ui()) {
+ 		/* THE DURATION IS FIXED BUT THE DISTANCE IS NOT. ANIM_MS is 240ms
+ 		 * whatever the travel, and Vertical shows one card at a time, so a
+ 		 * step moves 878px where the horizontal row moves 400. At the shared
+@@ -3044,10 +3086,216 @@ furniture:
+ 	}
+ }
+ 
++/* ---------- the Zune theme ----------------------------------------------- *
++ *
++ * The same shelves, drawn as the Zune HD drew its collection: the systems as
++ * a column of words, each shelf as a list of art and names under a heading
++ * that runs off the screen, with its sort orders as the pivots. Everything
++ * here gathers what to show; src/zune.c does the drawing. */
++
++/* What the hub calls a system: Muse is the music, as the Zune said it. */
++static const char *zune_sys_name(const system_cfg *s)
++{
++	if (is_muse(s)) return muse_books_shown() ? "audiobooks" : "music";
++	return s->name;
++}
++
++static const char *zune_hub_word(void *ctx, int i)
++{
++	app *a = ctx;
++
++	if (i < 0 || i >= a->sys.count) return "";
++	return is_muse(&a->sys.systems[i]) ? "music" : a->sys.systems[i].name;
++}
++
++/* The second line of a game's row. On Favorites it is the system the game is
++ * from; elsewhere the region and dump tags the shelf's title leaves off, since
++ * that is what tells two copies of one game apart. */
++static void zune_game_sub(app *a, const sysview *v, int i, char *out, size_t n)
++{
++	const game_entry *g = &v->list.items[i];
++	const char *open, *close;
++	size_t k;
++
++	out[0] = '\0';
++	if (v->owner) {
++		zune_lower(a->sys.systems[shelf_owner(a, a->sys_cursor, i)].name, out, n);
++		return;
++	}
++	open = strchr(g->name, '(');
++	close = open ? strchr(open, ')') : NULL;
++	if (!open || !close || close - open < 2) return;
++	k = (size_t)(close - open - 1);
++	if (k >= n) k = n - 1;
++	memcpy(out, open + 1, k);
++	out[k] = '\0';
++	zune_lower(out, out, n);
++}
++
++static bool zune_game_row(void *ctx, int i, zune_row *out)
++{
++	static char sub[LIB_NAME];
++	app *a = ctx;
++	sysview *v = &a->view[a->sys_cursor];
++	const system_cfg *s = &a->sys.systems[a->sys_cursor];
++	const game_entry *g;
++	float cb;
++
++	if (i < 0 || i >= v->list.count) return false;
++	g = &v->list.items[i];
++	out->art = game_get_tex(a, i, &out->aw, &out->ah, &cb);
++	out->title = g->title;
++	if (is_muse(s)) {
++		int al = v->album ? v->album[i] : -1;
++
++		/* An album's second line is its artist; a book's says it is done,
++		 * and says nothing rather than its own name again. */
++		out->sub = g->name;
++		if (al >= 0 && g_muse.albums[al].book) {
++			if (g_book_done && g_book_done[al]) out->sub = "finished";
++			else if (!strcmp(g->name, g->title)) out->sub = "";
++		}
++		return true;
++	}
++	zune_game_sub(a, v, i, sub, sizeof sub);
++	out->sub = sub;
++	out->marked = fav_is(a->sys.systems[shelf_owner(a, a->sys_cursor, i)].tag,
++	                     g->file);
++	return true;
++}
++
++/* What is playing, along the foot of the hub, so the music is never more than
++ * a glance away - and SELECT is what opens it. */
++static void zune_hub_playing(app *a)
++{
++	const mu_now *mn = musec_now();
++	TTF_Font *fs = zune_font(ZF_SMALL);
++	char line[300];
++	int x = 48, y = TORTOS_SCREEN_H - 76;
++
++	if (!mn || (mn->state != MU_PLAYING && mn->state != MU_PAUSED) || !mn->title[0])
++		return;
++	SDL_SetRenderDrawColor(a->r, (Uint8)(ZUNE_ACCENT >> 16), (Uint8)(ZUNE_ACCENT >> 8),
++	                       (Uint8)ZUNE_ACCENT, 255);
++	SDL_RenderFillRect(a->r, &(SDL_Rect){ x, y + 8, 14, 14 });
++	x += 28;
++	x += zune_text(a->r, fs, mn->state == MU_PAUSED ? "paused" : "now playing",
++	               x, y, -1, ZUNE_GRAY) + 18;
++	snprintf(line, sizeof line, "%s%s%s", mn->title, mn->artist[0] ? "  -  " : "",
++	         mn->artist);
++	zune_lower(line, line, sizeof line);
++	zune_text_fit(a->r, fs, line, x, y, TORTOS_SCREEN_W - 48 - x, ZUNE_WHITE);
++}
++
++static void zune_draw_hub(app *a)
++{
++	int n = a->sys.count, sel = a->sys_cursor;
++	sysview *v = &a->view[sel];
++	const system_cfg *s = &a->sys.systems[sel];
++	SDL_Rect words = { 46, 92, 640, TORTOS_SCREEN_H - 92 - 104 };
++	int tile = 128, gap = 12, tx = TORTOS_SCREEN_W - 48 - tile * 2 - gap, ty = 112;
++	char line[64];
++	int k, shown;
++
++	cf_tick(&a->cf_sys, n);
++	if (a->cf_sys.active) redraw_now();
++	zune_hub_words(a->r, &words, n, a->cf_sys.pos, sel, zune_hub_word, a);
++
++	/* Quickplay: the art of where you are in the focused shelf - the game or
++	 * album the cursor was left on and the three after it. game_get_tex reads
++	 * the focused system, which is the one these belong to. */
++	shown = v->list.count < 4 ? v->list.count : 4;
++	for (k = 0; k < shown; k++) {
++		int i = (v->cursor + k) % v->list.count, w = 0, h = 0;
++		float cb;
++		SDL_Texture *t = game_get_tex(a, i, &w, &h, &cb);
++		SDL_Rect q = { tx + (k % 2) * (tile + gap), ty + (k / 2) * (tile + gap),
++		               tile, tile };
++
++		zune_tile(a->r, t, w, h, &q, k == 0 ? 255 : 200);
++	}
++	if (is_muse(s)) {
++		int albums = ml_count(&g_muse, false);
++
++		snprintf(line, sizeof line, "%d album%s", albums, albums == 1 ? "" : "s");
++	} else {
++		snprintf(line, sizeof line, "%d game%s", v->list.count,
++		         v->list.count == 1 ? "" : "s");
++	}
++	zune_text(a->r, zune_font(ZF_SMALL), line, tx, ty + 2 * (tile + gap) + 4, -1,
++	          ZUNE_GRAY);
++	zune_hub_playing(a);
++	zune_clock(a->r);
++}
++
++static void zune_draw_games(app *a)
++{
++	sysview *v = &a->view[a->sys_cursor];
++	const system_cfg *s = &a->sys.systems[a->sys_cursor];
++	SDL_Rect list = { 46, 232, TORTOS_SCREEN_W - 92, TORTOS_SCREEN_H - 232 - 16 };
++	const char *pivots[8];
++	int n = v->list.count, np = 0, k;
++
++	cf_tick(&v->cf, n);
++	if (v->cf.active) redraw_now();
++	{
++		int land = cf_landing(&v->cf, n);
++		if (land >= 0) prime_toward(a, a->sys_cursor, land);
++	}
++	if (!cf_cutting(&v->cf)) evict_far(v, TEX_KEEP_NEAR);
++
++	zune_panorama(a->r, zune_sys_name(s), -40, 0.0f, (SDL_Color){ 255, 255, 255, 230 });
++	if (is_muse(s)) {
++		for (k = 0; k < ML_ORDERS && np < 8; k++)
++			pivots[np++] = ml_order_label((ml_order)k, muse_books_shown());
++	} else {
++		for (k = 0; k < SORT_COUNT && np < 8; k++) pivots[np++] = SORTS[k].label;
++	}
++	zune_pivots(a->r, pivots, np, v->sort >= 0 && v->sort < np ? v->sort : 0,
++	            48, 150, ZUNE_ACCENT);
++	zune_list(a->r, &list, n, v->cf.pos, v->cursor, zune_game_row, a, ZUNE_ACCENT);
++	zune_clock(a->r);
++}
++
++/* Now Playing, the Zune HD's way: the artist across the top, enormous. */
++static unsigned zune_np_draw(app *a, const mu_now *mn, const char *next)
++{
++	zune_np z = { 0 };
++	char where[64] = "", hints[128];
++	const char *state = mn->state == MU_PLAYING ? NULL
++	                  : mn->state == MU_PAUSED  ? "paused" : "stopped";
++	int book = musec_is_book() ? ml_album_of(&g_muse, musec_track(mn->index)) : -1;
++
++	if (mn->state == MU_STOPPED && book >= 0 && g_book_done && g_book_done[book])
++		state = "finished";
++	if (musec_is_book() && musec_chapters() > 1)
++		snprintf(where, sizeof where, "chapter %d of %d",
++		         musec_chapter_now() + 1, musec_chapters());
++	else if (mn->count > 1)
++		snprintf(where, sizeof where, "%d of %d", mn->index + 1, mn->count);
++	snprintf(hints, sizeof hints, "a %s    l1/r1 %s    left/right seek    y %s",
++	         state ? "play" : "pause", musec_is_book() ? "chapter" : "track",
++	         musec_is_book() ? "speed" : "mode");
++	z.artist = mn->artist;
++	z.album = mn->album;
++	z.title = mn->title;
++	z.where = where;
++	z.next = next;
++	z.state = state;
++	z.hints = hints;
++	z.at = mn->at;
++	z.len = mn->len;
++	z.cover = g_np.tex;
++	z.glyph = musec_is_book() ? -1 : MUSE_MODES[musec_mode()].glyph;
++	z.now_ms = plat_now_ms();
++	return zune_now_playing(a->r, &z);
++}
++
+ static void draw_systems(app *a)
+ {
+ 	shelf_pacing(&a->cf_sys);
+-	if (CARD_DIRS[g_dir].both) { draw_both(a); return; }
++	if (zune_ui()) { zune_draw_hub(a); return; }
++	if (dir_both()) { draw_both(a); return; }
+ 
+ 	SDL_Rect focus;
+ 	const system_cfg *s = &a->sys.systems[a->sys_cursor];
+@@ -3058,7 +3306,7 @@ static void draw_systems(app *a)
+ 	 * a game into paging through a catalog. */
+ 	/* Vertical stacks the same row down the screen. Cubic is excluded: it
+ 	 * does not draw this row at all. */
+-	cf_layout lay = sys_layout(CARD_DIRS[g_dir].vertical
++	cf_layout lay = sys_layout(dir_vertical()
+ 	                           ? &CF_LAYOUT_SYSTEMS_V : &CF_LAYOUT_SYSTEMS);
+ 
+ 	cf_focus_rect(&lay, TORTOS_SCREEN_W, TORTOS_SCREEN_H, &focus);
+@@ -3083,7 +3331,7 @@ static void draw_systems(app *a)
+ 	const system_cfg *label = s;
+ 	float label_a = 1.0f;
+ 
+-	if (CARD_DIRS[g_dir].vertical) {
++	if (dir_vertical()) {
+ 		int li = 0;
+ 
+ 		label_a = cf_label(&a->cf_sys, a->sys.count, &li);
+@@ -3132,7 +3380,7 @@ static void draw_systems(app *a)
+ 	}
+ 	ui_text(a->r, ui_font(UI_F_META), line, TORTOS_SCREEN_W / 2, 690, 0,
+ 	        ui_fade(UI_TEXT_DIM, label_a));
+-	(CARD_DIRS[g_dir].vertical ? ui_rail_v : ui_rail)
++	(dir_vertical() ? ui_rail_v : ui_rail)
+ 		(a->r, TORTOS_SCREEN_W, TORTOS_SCREEN_H, a->cf_sys.pos, a->sys.count,
+ 		 s->accent, rail_sys_hue, a);
+ }
+@@ -3367,9 +3615,9 @@ static void draw_game_text(app *a, sysview *v, const system_cfg *s, int idx)
+ 		 * Cubic draws the same string in the same place, from its own caller,
+ 		 * after the cube; baked into a face it would turn away mid-move and two
+ 		 * would show at once, one per face, disagreeing by one. */
+-		if (!CARD_DIRS[g_dir].both) {
++		if (!dir_both()) {
+ 			snprintf(count, sizeof count, "%d / %d", idx + 1, v->list.count);
+-			if (CARD_DIRS[g_dir].vertical)
++			if (dir_vertical())
+ 				ui_text(a->r, ui_font(UI_F_META), count, 24, 700,
+ 				        -1, UI_TEXT_DIM);
+ 			else
+@@ -3418,7 +3666,8 @@ static void draw_games(app *a)
+ {
+ 	shelf_pacing(&a->view[a->sys_cursor].cf);
+ 	shelf_pacing(&a->cf_sys);
+-	if (CARD_DIRS[g_dir].both) { draw_both(a); return; }
++	if (zune_ui()) { zune_draw_games(a); return; }
++	if (dir_both()) { draw_both(a); return; }
+ 
+ 	sysview *v = &a->view[a->sys_cursor];
+ 	const system_cfg *s = &a->sys.systems[a->sys_cursor];
+@@ -3430,7 +3679,7 @@ static void draw_games(app *a)
+ 	ui_glow(a->r, &focus, s->accent, 100, 2.3f);
+ 	if (cf_draw(&v->cf, a->r, TORTOS_SCREEN_W, TORTOS_SCREEN_H, v->list.count,
+ 	            game_get_tex, a,
+-	            !CARD_DIRS[g_dir].vertical ? row
++	            !dir_vertical() ? row
+ 	            : albums ? &CF_LAYOUT_ALBUMS_V : &CF_LAYOUT_GAMES_V))
+ 		redraw_now();
+ 	/* Warm where the move is about to cut to, one card per frame, underneath
+@@ -3444,7 +3693,7 @@ static void draw_games(app *a)
+ 	if (!cf_cutting(&v->cf)) evict_far(v, TEX_KEEP_NEAR);
+ 
+ 	draw_game_text(a, v, s, v->cursor);
+-	(CARD_DIRS[g_dir].vertical ? ui_rail_v : ui_rail)
++	(dir_vertical() ? ui_rail_v : ui_rail)
+ 		(a->r, TORTOS_SCREEN_W, TORTOS_SCREEN_H, v->cf.pos, v->list.count,
+ 		 s->accent, NULL, NULL);
+ }
+@@ -3781,6 +4030,8 @@ static void menu_draw_ex(app *a, const char *heading, const menu_row *rows,
+ {
+ 	TTF_Font *fm = ui_font(UI_F_MENU), *fh = ui_font(UI_F_LABEL);
+ 	int row_h = menu_row_h();
++
++	if (zune_ui()) accent = ZUNE_ACCENT;
+ 	int pad = menu_pad();
+ 	/* A rule is 2px of bar plus the gap the heading's rule gets below it, so
+ 	 * the footer sits off the list by the same amount the first row sits off
+@@ -6637,7 +6888,7 @@ static bool stats_screen(app *a)
+ 					 * written for a mode that enters, shipped to one that
+ 					 * does not, and the lesson recorded was that three UI
+ 					 * directions are three code paths. */
+-					if (CARD_DIRS[g_dir].both) {
++					if (dir_both()) {
+ 						cf_reset(&a->cf_sys, a->sys_cursor);
+ 						cf_reset(&a->view[si].cf, a->view[si].cursor);
+ 					} else {
+@@ -6766,8 +7017,9 @@ static void about_screen(app *a)
+  * follows UI Direction, because which axis moves is what that setting does. */
+ static ctl_dir controls_dir(void)
+ {
+-	if (CARD_DIRS[g_dir].both)     return CTL_CUBIC;
+-	if (CARD_DIRS[g_dir].vertical) return CTL_VERTICAL;
++	if (zune_ui())      return CTL_ZUNE;
++	if (dir_both())     return CTL_CUBIC;
++	if (dir_vertical()) return CTL_VERTICAL;
+ 	return CTL_HORIZONTAL;
+ }
+ 
+@@ -7080,6 +7332,44 @@ static int sysmenu_build(void *ctx, menu_row *rows, int max,
+ 
+ /* Left and right cycle the value on a row that has one; A opens whatever the
+  * row leads to. Everything else the runner has already dealt with. */
++/* Step the focused shelf's sort order by `d`, keeping the same game (or
++ * album) under the cursor. The menu's Sort By row, and the Zune's pivots. */
++static void shelf_resort(app *a, int d)
++{
++	sysview *v = &a->view[a->sys_cursor];
++	char keep[LIB_PATH];
++	int i, keep_owner = -1;
++
++	keep[0] = '\0';
++	if (v->cursor >= 0 && v->cursor < v->list.count) {
++		snprintf(keep, sizeof keep, "%s",
++		         v->list.items[v->cursor].file);
++		/* On Favorites a file name is not enough: the same one can
++		 * be on the shelf twice, from two systems. */
++		if (v->owner) keep_owner = v->owner[v->cursor];
++	}
++
++	v->sort = is_muse(&a->sys.systems[a->sys_cursor])
++	        ? (v->sort + d + ML_ORDERS) % ML_ORDERS
++	        : sort_step(v->sort, d);
++	sort_shelf(a, a->sys_cursor);
++	sort_save(a);
++
++	/* The textures are indexed by position, so they moved with
++	 * nothing. Dropping them lets the next frame fetch each card's
++	 * art for where it now sits. */
++	free_view_textures(v);
++
++	v->cursor = 0;
++	for (i = 0; i < v->list.count; i++)
++		if (!strcmp(v->list.items[i].file, keep) &&
++		    (!v->owner || v->owner[i] == keep_owner)) {
++			v->cursor = i;
++			break;
++		}
++	cf_reset(&v->cf, v->cursor);
++}
++
+ static menu_result sysmenu_key(app *a, void *ctx, in_button key, int sel)
+ {
+ 	int d = key == IN_RIGHT ? 1 : key == IN_LEFT ? -1 : 0;
+@@ -7154,38 +7444,7 @@ static menu_result sysmenu_key(app *a, void *ctx, in_button key, int sel)
+ 		 * to sit in the old order is not. On Muse's shelf the same goes for
+ 		 * the album, whose folder is its `file`. */
+ 		if (d && sel == SM_SORT) {
+-			sysview *v = &a->view[a->sys_cursor];
+-			char keep[LIB_PATH];
+-			int i, keep_owner = -1;
+-
+-			keep[0] = '\0';
+-			if (v->cursor >= 0 && v->cursor < v->list.count) {
+-				snprintf(keep, sizeof keep, "%s",
+-				         v->list.items[v->cursor].file);
+-				/* On Favorites a file name is not enough: the same one can
+-				 * be on the shelf twice, from two systems. */
+-				if (v->owner) keep_owner = v->owner[v->cursor];
+-			}
+-
+-			v->sort = is_muse(&a->sys.systems[a->sys_cursor])
+-			        ? (v->sort + d + ML_ORDERS) % ML_ORDERS
+-			        : sort_step(v->sort, d);
+-			sort_shelf(a, a->sys_cursor);
+-			sort_save(a);
+-
+-			/* The textures are indexed by position, so they moved with
+-			 * nothing. Dropping them lets the next frame fetch each card's
+-			 * art for where it now sits. */
+-			free_view_textures(v);
+-
+-			v->cursor = 0;
+-			for (i = 0; i < v->list.count; i++)
+-				if (!strcmp(v->list.items[i].file, keep) &&
+-				    (!v->owner || v->owner[i] == keep_owner)) {
+-					v->cursor = i;
+-					break;
+-				}
+-			cf_reset(&v->cf, v->cursor);
++			shelf_resort(a, d);
+ 			return MENU_STAY;
+ 		}
+ 		if (key != IN_ACCEPT) return MENU_STAY;
+@@ -7250,6 +7509,7 @@ static menu_result sysmenu_key(app *a, void *ctx, in_button key, int sel)
+ 
+ 		if (k != g_cards) {
+ 			g_cards = k;
++			theme_apply(a);
+ 			free_all_textures(a);
+ 			prime_sys_window(a);
+ 			db_set_str(db_dev(), "cards", CARD_SETS[g_cards].id);
+@@ -8259,6 +8519,7 @@ static unsigned np_draw(app *a, const mu_now *mn, const char *next)
+ 	/* A book played to its end says so, rather than that it stopped. */
+ 	if (mn->state == MU_STOPPED && book >= 0 && g_book_done && g_book_done[book])
+ 		state = "Finished";
++	if (zune_ui()) return zune_np_draw(a, mn, next);
+ 
+ 	SDL_SetRenderDrawColor(r, UI_BG_R, UI_BG_G, UI_BG_B, 255);
+ 	SDL_RenderClear(r);
+@@ -8901,13 +9162,12 @@ static int muse_card_of(const sysview *v, int album)
+ static void muse_shelf_screen(app *a, bool now)
+ {
+ 	int prev_screen = a->screen, prev_sys = a->sys_cursor;
+-	bool vert = CARD_DIRS[g_dir].vertical;
+-	in_button back = vert ? IN_DOWN : IN_LEFT, fwd = vert ? IN_UP : IN_RIGHT;
+-	in_button jup = vert ? IN_LEFT : IN_UP, jdn = vert ? IN_RIGHT : IN_DOWN;
++	in_button back, fwd, jup, jdn;
+ 	sysview *v;
+ 	int muse = -1, i, playing;
+ 	bool done = false;
+ 
++	shelf_keys(&back, &fwd, &jup, &jdn);
+ 	for (i = 0; i < a->sys.count; i++)
+ 		if (is_muse(&a->sys.systems[i])) { muse = i; break; }
+ 	if (muse < 0 || a->view[muse].list.count <= 0) return;
+@@ -8954,8 +9214,13 @@ static void muse_shelf_screen(app *a, bool now)
+ 			if (in_repeat(&a->in, fwd))  { v->cursor = (v->cursor + 1) % n; dir = +1; }
+ 			if (in_repeat(&a->in, jdn))  v->cursor = shelf_letter_jump(v, +1);
+ 			if (in_repeat(&a->in, jup))  v->cursor = shelf_letter_jump(v, -1);
+-			if (in_repeat(&a->in, IN_L1)) v->cursor = ((v->cursor - CF_WINDOW) % n + n) % n;
+-			if (in_repeat(&a->in, IN_R1)) v->cursor = (v->cursor + CF_WINDOW) % n;
++			if (zune_ui()) {
++				if (a->in.pressed[IN_L1] || a->in.pressed[IN_R1])
++					shelf_resort(a, a->in.pressed[IN_R1] ? +1 : -1);
++			} else {
++				if (in_repeat(&a->in, IN_L1)) v->cursor = ((v->cursor - CF_WINDOW) % n + n) % n;
++				if (in_repeat(&a->in, IN_R1)) v->cursor = (v->cursor + CF_WINDOW) % n;
++			}
+ 			cf_set_cursor_dir(&v->cf, v->cursor, n, dir);
+ 		}
+ 		if (muse_keys(a)) {
+@@ -10003,6 +10268,7 @@ static void launch(app *a)
+ 		 * the display, so this side tears its own down first. */
+ 		anim_launch(a, 190);
+ 		free_all_textures(a);
++		zune_quit();
+ 		ui_quit();
+ 		plat_input_quit();
+ 		plat_video_quit();
+@@ -10048,6 +10314,8 @@ static void launch(app *a)
+ 		if (!plat_video_init() || !plat_input_init()) { a->running = false; return; }
+ 		a->r = plat_renderer();
+ 		ui_init(a->r, P_FONT);
++		zune_init(a->r, P_ROOT, P_FONT);
++		theme_apply(a);
+ 		a->menu_w = 0;   /* fonts reopened: remeasure the panel */
+ 		prime_sys_window(a);
+ 		prime_window(a, a->sys_cursor);
+@@ -10233,10 +10501,11 @@ static void update_systems(app *a)
+ 	 * the first system at the bottom, the last at the top, so up advances.
+ 	 * Down-is-next is the convention for a list on a page; a stack is read
+ 	 * from the bottom, and this shelf is a stack. */
+-	in_button back = CARD_DIRS[g_dir].vertical ? IN_DOWN : IN_LEFT;
+-	in_button fwd  = CARD_DIRS[g_dir].vertical ? IN_UP : IN_RIGHT;
++	in_button back, fwd, jup, jdn;
+ 	int dir = 0;
+ 
++	shelf_keys(&back, &fwd, &jup, &jdn);
++
+ 	if (in_repeat(&a->in, back)) { a->sys_cursor = (a->sys_cursor - 1 + n) % n; dir = -1; }
+ 	if (in_repeat(&a->in, fwd))  { a->sys_cursor = (a->sys_cursor + 1) % n; dir = +1; }
+ 	if (dir) load_ahead(a);
+@@ -10335,15 +10604,21 @@ static void update_games(app *a)
+ 	 * reassigned onto the other: stepping always runs along the row, and the
+ 	 * letter jump always runs across it. Turning the shelf turns the d-pad
+ 	 * with it and nothing is left doing two jobs. */
+-	bool vert = CARD_DIRS[g_dir].vertical;
+-	in_button back = vert ? IN_DOWN : IN_LEFT, fwd = vert ? IN_UP : IN_RIGHT;
+-	in_button jup = vert ? IN_LEFT : IN_UP, jdn = vert ? IN_RIGHT : IN_DOWN;
++	in_button back, fwd, jup, jdn;
+ 	int dir = 0;
+ 
++	shelf_keys(&back, &fwd, &jup, &jdn);
+ 	if (in_repeat(&a->in, back)) { v->cursor = (v->cursor - 1 + n) % n; dir = -1; }
+ 	if (in_repeat(&a->in, fwd))  { v->cursor = (v->cursor + 1) % n; dir = +1; }
+ 	if (in_repeat(&a->in, jdn))  v->cursor = shelf_letter_jump(v, +1);
+ 	if (in_repeat(&a->in, jup))  v->cursor = shelf_letter_jump(v, -1);
++	/* The Zune's pivots are its sort orders, and the shoulders swing between
++	 * them. That is where a screenful went on the other themes; on a list
++	 * the letter jump already crosses a long shelf. */
++	if (zune_ui() && (a->in.pressed[IN_L1] || a->in.pressed[IN_R1])) {
++		shelf_resort(a, a->in.pressed[IN_R1] ? +1 : -1);
++		return;
++	}
+ 	/* L1/R1 jump a screenful, so a long shelf is crossable. Wrapped the long
+ 	 * way round on purpose: C's % truncates toward zero, so on a shelf of
+ 	 * three games the obvious `(cursor - CF_WINDOW + n*2) % n` lands on -1 and
+@@ -11185,6 +11460,11 @@ static const char *shot_kb_text = "correct horse";
+ static const char *shot_kb_title = "Wi-Fi password";
+ static int shot_slots, shot_slot_sel;
+ static int shot_jump;               /* letter-jumps to apply before drawing */
++/* --theme ID draws with that card set whatever the device has stored, and
++ * --sys N with the Nth shelf focused, so every theme and shelf can be
++ * looked at from one staging tree. */
++static const char *shot_theme;
++static int shot_sys = -1;
+ /* --nowplaying ALBUM [TRACK [SECONDS]], and --paused with it. */
+ static int   shot_np = -1, shot_np_track, shot_np_paused;
+ static float shot_np_at = 83.0f;
+@@ -11528,6 +11808,8 @@ int main(int argc, char *argv[])
+ 		else if (!strcmp(argv[i], "--gamemove") && i + 1 < argc)
+ 			shot_gamemove = (float)atof(argv[++i]);
+ 		else if (!strcmp(argv[i], "--info")) shot_info = 1;
++		else if (!strcmp(argv[i], "--theme") && i + 1 < argc) shot_theme = argv[++i];
++		else if (!strcmp(argv[i], "--sys") && i + 1 < argc) shot_sys = atoi(argv[++i]);
+ 		else if (!strcmp(argv[i], "--controls")) {
+ 			shot_controls = 0;
+ 			if (i + 1 < argc && argv[i + 1][0] >= '0' && argv[i + 1][0] <= '9')
+@@ -11954,10 +12236,11 @@ int main(int argc, char *argv[])
+ 	 * The card settings are only read by drawing, which comes long after. */
+ 	{
+ 		char set[CFG_STR];
+-		db_get_str(db_dev(), "cards", set, sizeof set, CARDS_DEFAULT);
++		db_get_str(db_dev(), "cards", set, sizeof set, CARDS_SETTING_DEFAULT);
+ 		g_cards = cards_index(set);
+ 		db_get_str(db_dev(), "cards_dir", set, sizeof set, CARDS_DIR_DEFAULT);
+ 		g_dir = cards_dir_index(set);
++		if (shot_theme) g_cards = cards_index(shot_theme);
+ 	}
+ 	a.sys_cursor = 0;
+ 	db_get_str(db_lib(), "startup_system", startup, sizeof startup, "");
+@@ -12028,6 +12311,8 @@ int main(int argc, char *argv[])
+ 	 * saved brightness does. Read before ui_init, which is when the scale is
+ 	 * applied. */
+ 	if (!ui_init(a.r, P_FONT)) fprintf(stderr, "font init failed\n");
++	zune_init(a.r, P_ROOT, P_FONT);
++	theme_apply(&a);
+ 	t_mark("font+settings");
+ 
+ 	/* The system cards asked for before the display came up, installed so the
+@@ -12044,6 +12329,10 @@ int main(int argc, char *argv[])
+ 
+ 	if (shot_path) {
+ 		if (shot_screen >= 0) a.screen = (screen_id)shot_screen;
++		if (shot_sys >= 0 && shot_sys < a.sys.count) {
++			a.sys_cursor = shot_sys;
++			cf_reset(&a.cf_sys, shot_sys);
++		}
+ 		if (shot_jump) {
+ 			sysview *v = &a.view[a.sys_cursor];
+ 			int k, dir = shot_jump > 0 ? 1 : -1;
+@@ -12230,7 +12519,7 @@ int main(int argc, char *argv[])
+ 		 * MENU opens in a game. It draws over the shelf and returns here.
+ 		 * Both handles its own, because there MENU and B mean two different
+ 		 * menus and the screen cannot say which. */
+-		if (CARD_DIRS[g_dir].both) {
++		if (dir_both()) {
+ 			update_both(&a);
+ 		} else {
+ 			if (a.in.pressed[IN_MENU]) { tortos_menu(&a); continue; }
+@@ -12277,6 +12566,7 @@ done:
+ 		free(a.view[i].tex); free(a.view[i].tw); free(a.view[i].th);
+ 		lib_free(&a.view[i].list);
+ 	}
++	zune_quit();
+ 	ui_quit();
+ 	IMG_Quit();
+ 	plat_input_quit();
+diff --git a/src/ui.c b/src/ui.c
+index 05504f3..319eb59 100644
+--- a/src/ui.c
++++ b/src/ui.c
+@@ -108,6 +108,43 @@ bool ui_init(SDL_Renderer *r, const char *font_path)
+ static void glyphs_free(void);
+ static void digits_free(void);
+ 
++static void text_cache_free(void)
++{
++	for (int i = 0; i < TEXT_CACHE; i++)
++		if (cache[i].tex) SDL_DestroyTexture(cache[i].tex);
++	memset(cache, 0, sizeof cache);
++}
++
++bool ui_set_font(const char *font_path)
++{
++	TTF_Font *next[UI_F_COUNT];
++	int i;
++
++	if (!font_path || !strcmp(font_path, font_path_kept)) return true;
++	for (i = 0; i < UI_F_COUNT; i++) {
++		next[i] = TTF_OpenFont(font_path, (int)(FONT_BASE * font_mul[i] + 0.5f));
++		if (!next[i]) {
++			fprintf(stderr, "font %s: %s\n", font_path, TTF_GetError());
++			while (i-- > 0) TTF_CloseFont(next[i]);
++			return false;
++		}
++	}
++	/* Everything cached was rendered from the old faces, and a new face can
++	 * land at an old one's address, so none of it can be trusted. */
++	text_cache_free();
++	digits_free();
++	if (f_mark) { TTF_CloseFont(f_mark); f_mark = NULL; }
++	for (i = 0; i < UI_F_COUNT; i++) {
++		if (fonts[i]) TTF_CloseFont(fonts[i]);
++		fonts[i] = next[i];
++	}
++	snprintf(font_path_kept, sizeof font_path_kept, "%s", font_path);
++	return true;
++}
++
++static bool g_flat;
++void ui_set_flat(bool on) { g_flat = on; }
++
+ void ui_quit(void)
+ {
+ 	glyphs_free();
+@@ -769,6 +806,7 @@ void ui_round_rect(SDL_Renderer *r, const SDL_Rect *q, int radius, SDL_Color col
+ 	int y;
+ 
+ 	if (q->w <= 0 || q->h <= 0) return;
++	if (g_flat) radius = 0;
+ 	if (radius * 2 > q->w) radius = q->w / 2;
+ 	if (radius * 2 > q->h) radius = q->h / 2;
+ 	if (radius < 0) radius = 0;
+@@ -799,6 +837,20 @@ void ui_panel(SDL_Renderer *r, const SDL_Rect *q, int radius, unsigned border)
+ 	const int bw = UI_PANEL_BORDER;
+ 	SDL_Rect in = { q->x + bw, q->y + bw, q->w - bw * 2, q->h - bw * 2 };
+ 
++	if (g_flat) {
++		/* Flat: a black slab with a hairline round it and the accent as a
++		 * bar along its top edge, the way the Zune marked a surface. */
++		SDL_SetRenderDrawBlendMode(r, SDL_BLENDMODE_BLEND);
++		SDL_SetRenderDrawColor(r, 70, 70, 70, 255);
++		SDL_RenderFillRect(r, q);
++		SDL_SetRenderDrawColor(r, 0, 0, 0, 255);
++		SDL_RenderFillRect(r, &(SDL_Rect){ q->x + 2, q->y + 2, q->w - 4, q->h - 4 });
++		SDL_SetRenderDrawColor(r, (Uint8)(border >> 16), (Uint8)(border >> 8),
++		                       (Uint8)border, 255);
++		SDL_RenderFillRect(r, &(SDL_Rect){ q->x, q->y, q->w, 6 });
++		return;
++	}
++
+ 	ui_round_rect(r, q, radius, (SDL_Color){
+ 		(Uint8)(border >> 16), (Uint8)(border >> 8), (Uint8)border, 255 });
+ 	/* Opaque enough that a card title behind it does not ghost through the
+diff --git a/src/ui.h b/src/ui.h
+index bc9043c..efeca08 100644
+--- a/src/ui.h
++++ b/src/ui.h
+@@ -56,6 +56,12 @@
+ 
+ bool ui_init(SDL_Renderer *r, const char *font_path);
+ void ui_quit(void);
++/* Reopen every role in another face, for a theme that brings its own. False,
++ * with the old face kept, when the new one cannot be opened. */
++bool ui_set_font(const char *font_path);
++/* Square corners and flat black panels with the accent along the top, for
++ * the Zune theme. Off is TortOS's own rounded, lit panels. */
++void ui_set_flat(bool on);
+ 
+ /* The type scale. One base size, a multiplier per role, and a global user
+  * scale over the top -- so retuning a role is one number here instead of a
+diff --git a/src/zune.c b/src/zune.c
+new file mode 100644
+index 0000000..b21ff18
+--- /dev/null
++++ b/src/zune.c
+@@ -0,0 +1,471 @@
++/* SPDX-License-Identifier: MIT */
++#include "zune.h"
++#include "ui.h"
++#include "platform.h"
++
++#include <math.h>
++#include <stdio.h>
++#include <string.h>
++#include <time.h>
++
++/* Sizes are in the launcher's 1024x768, which the Pixel 2 shows at 640x480:
++ * multiply by 0.625 for what reaches the panel. ZF_SMALL is the floor - 26
++ * here is 16 there, and anything under that stops being read at arm's
++ * length. */
++static const struct { int file; int pt; } ZF_SPEC[ZF_COUNT] = {
++	[ZF_HUGE]  = { 0, 168 },
++	[ZF_HUB]   = { 0,  76 },
++	[ZF_PIVOT] = { 0,  54 },
++	[ZF_ROW]   = { 1,  44 },
++	[ZF_SUB]   = { 2,  30 },
++	[ZF_SMALL] = { 2,  26 },
++};
++static const char *const ZF_FILES[3] = {
++	"zune-light.ttf", "zune-semilight.ttf", "zune-regular.ttf",
++};
++
++static TTF_Font *fonts[ZF_COUNT];
++static bool opened;
++
++bool zune_init(SDL_Renderer *r, const char *root, const char *fallback)
++{
++	char path[600];
++	int i;
++
++	(void)r;
++	if (opened) return fonts[ZF_ROW] != NULL;
++	opened = true;
++	for (i = 0; i < ZF_COUNT; i++) {
++		snprintf(path, sizeof path, "%s/fonts/%s", root, ZF_FILES[ZF_SPEC[i].file]);
++		fonts[i] = TTF_OpenFont(path, ZF_SPEC[i].pt);
++		if (!fonts[i] && fallback)
++			fonts[i] = TTF_OpenFont(fallback, ZF_SPEC[i].pt);
++		if (!fonts[i])
++			fprintf(stderr, "zune: no font for role %d: %s\n", i, TTF_GetError());
++	}
++	return fonts[ZF_ROW] != NULL;
++}
++
++/* ---- text ------------------------------------------------------------------ */
++
++#define ZT_CACHE 96
++
++static struct zt_entry {
++	TTF_Font *font;
++	char str[256];
++	SDL_Texture *tex;
++	int w, h;
++	unsigned used;
++} zt[ZT_CACHE];
++static unsigned zt_clock;
++
++void zune_quit(void)
++{
++	int i;
++
++	for (i = 0; i < ZT_CACHE; i++)
++		if (zt[i].tex) SDL_DestroyTexture(zt[i].tex);
++	memset(zt, 0, sizeof zt);
++	for (i = 0; i < ZF_COUNT; i++)
++		if (fonts[i]) { TTF_CloseFont(fonts[i]); fonts[i] = NULL; }
++	opened = false;
++}
++
++TTF_Font *zune_font(zune_font_role role)
++{
++	if (role < 0 || role >= ZF_COUNT) return NULL;
++	return fonts[role];
++}
++
++static struct zt_entry *zt_get(SDL_Renderer *r, TTF_Font *f, const char *s)
++{
++	int i, oldest = 0;
++	SDL_Surface *surf;
++
++	if (!f || !s || !*s) return NULL;
++	for (i = 0; i < ZT_CACHE; i++) {
++		if (zt[i].tex && zt[i].font == f && !strcmp(zt[i].str, s)) {
++			zt[i].used = ++zt_clock;
++			return &zt[i];
++		}
++		if (!zt[i].tex) { oldest = i; break; }
++		if (zt[i].used < zt[oldest].used) oldest = i;
++	}
++	if (zt[oldest].tex) SDL_DestroyTexture(zt[oldest].tex);
++	memset(&zt[oldest], 0, sizeof zt[oldest]);
++	surf = TTF_RenderUTF8_Blended(f, s, (SDL_Color){ 255, 255, 255, 255 });
++	if (!surf) return NULL;
++	zt[oldest].tex = SDL_CreateTextureFromSurface(r, surf);
++	zt[oldest].w = surf->w;
++	zt[oldest].h = surf->h;
++	SDL_FreeSurface(surf);
++	if (!zt[oldest].tex) return NULL;
++	SDL_SetTextureBlendMode(zt[oldest].tex, SDL_BLENDMODE_BLEND);
++	zt[oldest].font = f;
++	snprintf(zt[oldest].str, sizeof zt[oldest].str, "%s", s);
++	zt[oldest].used = ++zt_clock;
++	return &zt[oldest];
++}
++
++int zune_text(SDL_Renderer *r, TTF_Font *f, const char *s, int x, int y,
++              int anchor, SDL_Color col)
++{
++	struct zt_entry *e = zt_get(r, f, s);
++	SDL_Rect dst;
++
++	if (!e) return 0;
++	dst.w = e->w;
++	dst.h = e->h;
++	dst.x = anchor == 0 ? x - e->w / 2 : (anchor > 0 ? x - e->w : x);
++	dst.y = y;
++	SDL_SetTextureColorMod(e->tex, col.r, col.g, col.b);
++	SDL_SetTextureAlphaMod(e->tex, col.a);
++	SDL_RenderCopy(r, e->tex, NULL, &dst);
++	return e->w;
++}
++
++int zune_text_width(TTF_Font *f, const char *s)
++{
++	int w = 0;
++
++	if (f && s && *s) TTF_SizeUTF8(f, s, &w, NULL);
++	return w;
++}
++
++int zune_text_fit(SDL_Renderer *r, TTF_Font *f, const char *s, int x, int y,
++                  int maxw, SDL_Color col)
++{
++	char fit[256];
++
++	if (!f || !s || !*s) return 0;
++	if (zune_text_width(f, s) <= maxw) return zune_text(r, f, s, x, y, -1, col);
++	ui_fit_text(f, s, fit, sizeof fit, maxw);
++	return zune_text(r, f, fit, x, y, -1, col);
++}
++
++void zune_lower(const char *in, char *out, size_t n)
++{
++	size_t i;
++
++	if (!n) return;
++	for (i = 0; in && in[i] && i + 1 < n; i++)
++		out[i] = (in[i] >= 'A' && in[i] <= 'Z') ? (char)(in[i] + 32) : in[i];
++	out[i] = '\0';
++}
++
++SDL_Color zune_rgb(unsigned rgb, Uint8 alpha)
++{
++	return (SDL_Color){ (Uint8)(rgb >> 16), (Uint8)(rgb >> 8), (Uint8)rgb, alpha };
++}
++
++static SDL_Color mix(SDL_Color a, SDL_Color b, float t)
++{
++	if (t < 0) t = 0;
++	if (t > 1) t = 1;
++	return (SDL_Color){ (Uint8)(a.r + (b.r - a.r) * t), (Uint8)(a.g + (b.g - a.g) * t),
++	                    (Uint8)(a.b + (b.b - a.b) * t), (Uint8)(a.a + (b.a - a.a) * t) };
++}
++
++/* ---- chrome ---------------------------------------------------------------- */
++
++void zune_clear(SDL_Renderer *r)
++{
++	SDL_SetRenderDrawBlendMode(r, SDL_BLENDMODE_BLEND);
++	SDL_SetRenderDrawColor(r, 0, 0, 0, 255);
++	SDL_RenderClear(r);
++}
++
++void zune_panorama(SDL_Renderer *r, const char *title, int y, float slide,
++                   SDL_Color col)
++{
++	char low[256];
++
++	zune_lower(title, low, sizeof low);
++	/* The Zune hung its heading slightly off the left edge as well as the
++	 * right, so the first letter's side bearing does not read as a margin. */
++	zune_text(r, zune_font(ZF_HUGE), low, 22 - (int)slide, y, -1, col);
++}
++
++void zune_pivots(SDL_Renderer *r, const char *const *labels, int n, int sel,
++                 int x, int y, unsigned accent)
++{
++	TTF_Font *f = zune_font(ZF_PIVOT);
++	char low[128];
++	int k;
++
++	(void)accent;
++	if (n <= 0) return;
++	for (k = 0; k < n && x < TORTOS_SCREEN_W; k++) {
++		int i = (sel + k) % n;
++
++		zune_lower(labels[i], low, sizeof low);
++		x += zune_text(r, f, low, x, y, -1, k == 0 ? ZUNE_WHITE : ZUNE_DARK) + 34;
++	}
++}
++
++void zune_clock(SDL_Renderer *r)
++{
++	char buf[16];
++	time_t now = time(NULL);
++	struct tm tm;
++	int h;
++
++	if (!localtime_r(&now, &tm)) return;
++	h = tm.tm_hour % 12;
++	snprintf(buf, sizeof buf, "%d:%02d", h ? h : 12, tm.tm_min);
++	zune_text(r, zune_font(ZF_SMALL), buf, TORTOS_SCREEN_W - 28, 14, 1, ZUNE_SOFT);
++}
++
++void zune_tile(SDL_Renderer *r, SDL_Texture *art, int aw, int ah,
++               const SDL_Rect *q, Uint8 alpha)
++{
++	SDL_Rect in;
++	float k;
++
++	SDL_SetRenderDrawBlendMode(r, SDL_BLENDMODE_BLEND);
++	SDL_SetRenderDrawColor(r, 28, 28, 30, alpha);
++	SDL_RenderFillRect(r, q);
++	if (!art || aw <= 0 || ah <= 0) return;
++	k = fminf((float)q->w / aw, (float)q->h / ah);
++	in.w = (int)(aw * k + 0.5f);
++	in.h = (int)(ah * k + 0.5f);
++	in.x = q->x + (q->w - in.w) / 2;
++	in.y = q->y + (q->h - in.h) / 2;
++	SDL_SetTextureAlphaMod(art, alpha);
++	SDL_RenderCopy(r, art, NULL, &in);
++	SDL_SetTextureAlphaMod(art, 255);
++}
++
++/* ---- lists ----------------------------------------------------------------- */
++
++#define ZL_ROW_H  124
++#define ZL_ART    104
++#define ZL_GAP     26
++
++/* Where item `i` sits relative to `pos` on a ring of `count`, in rows: the
++ * shorter way round, so the item just past the end is drawn just above the
++ * first. */
++static float ring_d(int i, float pos, int count)
++{
++	float d = (float)i - pos;
++
++	d = fmodf(d, (float)count);
++	if (d > count / 2.0f) d -= count;
++	if (d <= -count / 2.0f) d += count;
++	return d;
++}
++
++static void list_row(SDL_Renderer *r, const zune_row *row, int x, int y, int w,
++                     bool sel, unsigned accent)
++{
++	SDL_Rect art = { x, y + (ZL_ROW_H - ZL_ART) / 2 - 6, ZL_ART, ZL_ART };
++	int tx = x + ZL_ART + ZL_GAP, tw = w - ZL_ART - ZL_GAP;
++	TTF_Font *ft = zune_font(ZF_ROW), *fs = zune_font(ZF_SUB);
++	int ty = art.y + 2;
++	SDL_Color tc = sel ? zune_rgb(accent, 255) : ZUNE_WHITE;
++	SDL_Color sc = sel ? ZUNE_SOFT : ZUNE_GRAY;
++
++	zune_tile(r, row->art, row->aw, row->ah, &art, sel ? 255 : 190);
++	zune_text_fit(r, ft, row->title, tx, ty, tw, tc);
++	ty += ft ? TTF_FontLineSkip(ft) : 52;
++	if (row->marked) {
++		/* A favorite: a small accent square where a heart would be, the Zune
++		 * marked things with blocks of color rather than icons. */
++		int sz = fs ? TTF_FontAscent(fs) / 2 : 10;
++		SDL_Rect m = { tx, ty + (fs ? TTF_FontAscent(fs) : 20) - sz - 3, sz, sz };
++
++		SDL_SetRenderDrawColor(r, (Uint8)(accent >> 16), (Uint8)(accent >> 8),
++		                       (Uint8)accent, 255);
++		SDL_RenderFillRect(r, &m);
++		if (row->sub && row->sub[0])
++			zune_text_fit(r, fs, row->sub, tx + sz + 12, ty, tw - sz - 12, sc);
++	} else if (row->sub && row->sub[0]) {
++		zune_text_fit(r, fs, row->sub, tx, ty, tw, sc);
++	}
++}
++
++void zune_list(SDL_Renderer *r, const SDL_Rect *area, int count, float pos,
++               int cursor, zune_row_fn get, void *ctx, unsigned accent)
++{
++	int fit = area->h / ZL_ROW_H;
++	zune_row row;
++	int i, k;
++
++	if (count <= 0) return;
++	SDL_RenderSetClipRect(r, area);
++	if (count <= fit) {
++		/* It all fits: nothing scrolls, the selection is what moves. */
++		for (i = 0; i < count; i++) {
++			memset(&row, 0, sizeof row);
++			if (!get(ctx, i, &row)) continue;
++			list_row(r, &row, area->x, area->y + i * ZL_ROW_H, area->w,
++			         i == cursor, accent);
++		}
++	} else {
++		/* The selection rides the second row and the list moves under it. */
++		int base = (int)floorf(pos);
++
++		for (k = base - 2; k <= base + fit + 1; k++) {
++			float d;
++			int y;
++
++			i = ((k % count) + count) % count;
++			d = ring_d(i, pos, count);
++			y = area->y + (int)lroundf((1.0f + d) * ZL_ROW_H);
++			if (y <= area->y - ZL_ROW_H || y >= area->y + area->h) continue;
++			memset(&row, 0, sizeof row);
++			if (!get(ctx, i, &row)) continue;
++			list_row(r, &row, area->x, y, area->w, i == cursor, accent);
++		}
++	}
++	SDL_RenderSetClipRect(r, NULL);
++}
++
++void zune_hub_words(SDL_Renderer *r, const SDL_Rect *area, int count,
++                    float pos, int cursor, zune_word_fn word, void *ctx)
++{
++	TTF_Font *f = zune_font(ZF_HUB);
++	int line = f ? TTF_FontLineSkip(f) + 6 : 110;
++	int fit = area->h / line;
++	char low[160];
++	int i, k;
++
++	if (count <= 0) return;
++	SDL_RenderSetClipRect(r, area);
++	if (count <= fit) {
++		for (i = 0; i < count; i++) {
++			/* The selection eases between words with the shelf: a word is
++			 * white in proportion to how close `pos` is to it, so a move is a
++			 * crossfade down the column rather than a jump. */
++			float near = 1.0f - fminf(1.0f, fabsf(ring_d(i, pos, count)));
++			SDL_Color c = mix(ZUNE_DARK, ZUNE_WHITE, i == cursor ? fmaxf(near, 0.35f) : near);
++
++			zune_lower(word(ctx, i), low, sizeof low);
++			zune_text(r, f, low, area->x, area->y + i * line, -1, c);
++		}
++	} else {
++		int base = (int)floorf(pos);
++
++		for (k = base - 2; k <= base + fit + 1; k++) {
++			float d, near;
++			int y;
++
++			i = ((k % count) + count) % count;
++			d = ring_d(i, pos, count);
++			y = area->y + (int)lroundf((1.0f + d) * line);
++			if (y <= area->y - line || y >= area->y + area->h) continue;
++			near = 1.0f - fminf(1.0f, fabsf(d));
++			zune_lower(word(ctx, i), low, sizeof low);
++			zune_text(r, f, low, area->x, y, -1,
++			          mix(ZUNE_DARK, ZUNE_WHITE, i == cursor ? fmaxf(near, 0.35f) : near));
++		}
++	}
++	SDL_RenderSetClipRect(r, NULL);
++}
++
++/* ---- now playing ----------------------------------------------------------- */
++
++static void mmss(char *out, size_t n, double s)
++{
++	long t = s > 0 ? (long)(s + 0.5) : 0;
++
++	if (t >= 3600) snprintf(out, n, "%ld:%02ld:%02ld", t / 3600, t / 60 % 60, t % 60);
++	else snprintf(out, n, "%ld:%02ld", t / 60, t % 60);
++}
++
++unsigned zune_now_playing(SDL_Renderer *r, const zune_np *np)
++{
++	TTF_Font *fh = zune_font(ZF_HUGE), *ft = zune_font(ZF_ROW),
++	         *fs = zune_font(ZF_SUB), *fm = zune_font(ZF_SMALL);
++	SDL_Color acc = zune_rgb(ZUNE_ACCENT, 255);
++	SDL_Rect cov = { 48, 196, 372, 372 };
++	int tx = cov.x + cov.w + 40, tw = TORTOS_SCREEN_W - tx - 48;
++	char low[256], t0[24], t1[24];
++	unsigned wait = (unsigned)-1;
++	double k = np->len > 0 ? np->at / np->len : 0;
++	int y, bar, fill, aw, travel;
++	float drift;
++
++	zune_clear(r);
++
++	/* The artist, enormous, behind everything and drifting. The Zune HD's
++	 * signature: the name pans slowly across the top of the screen while the
++	 * music plays, and holds still when it stops. */
++	zune_lower(np->artist && np->artist[0] ? np->artist : np->album, low, sizeof low);
++	aw = zune_text_width(fh, low);
++	travel = aw > TORTOS_SCREEN_W - 40 ? aw - (TORTOS_SCREEN_W - 40) + 80 : 80;
++	drift = 0.5f - 0.5f * cosf((float)(np->now_ms % 40000u) / 40000.0f * 6.2831853f);
++	if (np->state) drift = 0.0f;
++	zune_text(r, fh, low, 24 - (int)(drift * travel), -36, -1,
++	          (SDL_Color){ 255, 255, 255, 46 });
++	if (!np->state) wait = 50;
++
++	/* The cover, square, on a tile the size of the cover so a missing one
++	 * still holds its place. */
++	zune_tile(r, NULL, 0, 0, &cov, 255);
++	if (np->cover) {
++		int w, h;
++
++		SDL_QueryTexture(np->cover, NULL, NULL, &w, &h);
++		zune_tile(r, np->cover, w, h, &cov, 255);
++	}
++
++	y = cov.y + 4;
++	if (np->where && np->where[0]) {
++		int gx = tx + zune_text(r, fm, np->where, tx, y, -1, ZUNE_GRAY) + 16;
++		int gs = fm ? TTF_FontAscent(fm) : 24;
++
++		if (np->glyph >= 0)
++			ui_glyph_draw(r, (ui_glyph)np->glyph, gx + gs / 2, y + gs / 2 + 2, gs, acc);
++	}
++	y += (fm ? TTF_FontLineSkip(fm) : 32) + 18;
++	zune_lower(np->title, low, sizeof low);
++	zune_text_fit(r, ft, low, tx, y, tw, ZUNE_WHITE);
++	y += (ft ? TTF_FontLineSkip(ft) : 52) + 8;
++	zune_lower(np->artist, low, sizeof low);
++	zune_text_fit(r, fs, low, tx, y, tw, ZUNE_SOFT);
++	y += fs ? TTF_FontLineSkip(fs) : 36;
++	zune_lower(np->album, low, sizeof low);
++	zune_text_fit(r, fs, low, tx, y, tw, ZUNE_GRAY);
++	y += (fs ? TTF_FontLineSkip(fs) : 36) + 22;
++	if (np->state) {
++		zune_lower(np->state, low, sizeof low);
++		zune_text(r, fs, low, tx, y, -1, acc);
++	}
++	if (np->next && np->next[0]) {
++		int ny = cov.y + cov.h - (fm ? TTF_FontHeight(fm) : 30);
++
++		zune_lower(np->next, low, sizeof low);
++		ny -= (fm ? TTF_FontLineSkip(fm) : 32);
++		zune_text(r, fm, "up next", tx, ny, -1, ZUNE_GRAY);
++		zune_text_fit(r, fm, low, tx, ny + (fm ? TTF_FontLineSkip(fm) : 32), tw, ZUNE_SOFT);
++	}
++
++	/* Where in the track: a hairline the width of the screen, the played part
++	 * in magenta. */
++	bar = cov.y + cov.h + 40;
++	SDL_SetRenderDrawColor(r, 255, 255, 255, 46);
++	SDL_RenderFillRect(r, &(SDL_Rect){ cov.x, bar, TORTOS_SCREEN_W - cov.x * 2, 5 });
++	fill = (int)((TORTOS_SCREEN_W - cov.x * 2) * (k < 0 ? 0 : k > 1 ? 1 : k) + 0.5);
++	if (fill > 0) {
++		SDL_Color c = np->state ? mix(acc, ZUNE_DARK, 0.5f) : acc;
++
++		SDL_SetRenderDrawColor(r, c.r, c.g, c.b, 255);
++		SDL_RenderFillRect(r, &(SDL_Rect){ cov.x, bar, fill, 5 });
++	}
++	mmss(t0, sizeof t0, np->at);
++	ui_text_tabular(r, fm, t0, cov.x, bar + 16, -1, ZUNE_SOFT);
++	if (np->len > 0) {
++		char rem[32];
++
++		mmss(t1, sizeof t1, np->len > np->at ? np->len - np->at : 0);
++		snprintf(rem, sizeof rem, "-%s", t1);
++		ui_text_tabular(r, fm, rem, TORTOS_SCREEN_W - cov.x, bar + 16, 1, ZUNE_SOFT);
++	}
++	if (np->hints && np->hints[0]) {
++		zune_lower(np->hints, low, sizeof low);
++		zune_text(r, fm, low, TORTOS_SCREEN_W / 2, TORTOS_SCREEN_H - 58, 0, ZUNE_DARK);
++	}
++	zune_clock(r);
++	return wait;
++}
+diff --git a/src/zune.h b/src/zune.h
+new file mode 100644
+index 0000000..7920915
+--- /dev/null
++++ b/src/zune.h
+@@ -0,0 +1,132 @@
++/* SPDX-License-Identifier: MIT */
++#ifndef TORTOS_ZUNE_H
++#define TORTOS_ZUNE_H
++
++#include <SDL.h>
++#include <SDL_ttf.h>
++#include <stdbool.h>
++
++/* The Zune theme: the Zune HD's look, drawn by TortOS.
++ *
++ * Black, lowercase, and type doing all the work - huge light headings that
++ * run off the edge of the screen, a row of pivots under them, and lists of
++ * art with words beside it. One accent, the Zune's magenta, for what is
++ * selected and for what is playing.
++ *
++ * This file is the drawing only. It knows nothing about shelves, systems or
++ * Muse: main.c gathers what a screen shows and hands it over, so the theme
++ * can be read and retuned without reading the launcher. */
++
++/* Zune magenta. */
++#define ZUNE_ACCENT 0xEC008Cu
++
++typedef enum {
++	ZF_HUGE,   /* the panorama heading and Now Playing's artist  */
++	ZF_HUB,    /* the hub's words                                 */
++	ZF_PIVOT,  /* pivots                                          */
++	ZF_ROW,    /* a row's title, a track's name                   */
++	ZF_SUB,    /* a row's second line                             */
++	ZF_SMALL,  /* counts, times, hints                            */
++	ZF_COUNT
++} zune_font_role;
++
++/* Opens the theme's fonts from <root>/fonts/ (zune-light.ttf,
++ * zune-semilight.ttf, zune-regular.ttf), falling back to `fallback` for any
++ * that is missing, so a card without them still draws the theme in the
++ * launcher's own face. Cheap to call again: it opens nothing twice. */
++bool zune_init(SDL_Renderer *r, const char *root, const char *fallback);
++void zune_quit(void);
++TTF_Font *zune_font(zune_font_role role);
++
++/* ui_text, with a cache sized for screens that are mostly words: a list of
++ * five rows is ten strings, which the shared twelve-entry cache cannot hold
++ * beside a heading, a pivot row and a clock. Text is rendered white once and
++ * tinted as it is drawn, so a row changing color when it is selected costs a
++ * blit and not a render. Returns the width drawn. anchor: -1 left, 0 center,
++ * 1 right. */
++int zune_text(SDL_Renderer *r, TTF_Font *f, const char *s, int x, int y,
++              int anchor, SDL_Color col);
++int zune_text_width(TTF_Font *f, const char *s);
++/* The same, cut short with an ellipsis to fit `maxw`. */
++int zune_text_fit(SDL_Renderer *r, TTF_Font *f, const char *s, int x, int y,
++                  int maxw, SDL_Color col);
++
++/* ASCII lowercase, which is the whole of the Zune's typographic rule. */
++void zune_lower(const char *in, char *out, size_t n);
++
++/* The colors. */
++SDL_Color zune_rgb(unsigned rgb, Uint8 alpha);
++#define ZUNE_WHITE ((SDL_Color){ 255, 255, 255, 255 })
++#define ZUNE_SOFT  ((SDL_Color){ 196, 196, 196, 255 })
++#define ZUNE_GRAY  ((SDL_Color){ 128, 128, 128, 255 })
++#define ZUNE_DARK  ((SDL_Color){  72,  72,  72, 255 })
++
++void zune_clear(SDL_Renderer *r);
++
++/* The heading that runs off the right edge: `title`, lowercased, in the
++ * largest type, slid left by `slide` pixels. */
++void zune_panorama(SDL_Renderer *r, const char *title, int y, float slide,
++                   SDL_Color col);
++
++/* A row of pivots with the selected one first and bright, the rest trailing
++ * off to the right in gray - the Zune's way of saying there is more to
++ * either side. `labels` are lowercased as they are drawn. */
++void zune_pivots(SDL_Renderer *r, const char *const *labels, int n, int sel,
++                 int x, int y, unsigned accent);
++
++/* The time, top right, in the Zune's corner. */
++void zune_clock(SDL_Renderer *r);
++
++/* ---- lists --------------------------------------------------------------- */
++
++/* One row of a list: art at the left, a title, and a quieter line under it. */
++typedef struct {
++	SDL_Texture *art;   /* NULL draws an empty tile until it arrives */
++	int aw, ah;
++	const char *title;
++	const char *sub;    /* may be NULL or empty */
++	bool marked;        /* a favorite: a small accent mark before the sub */
++} zune_row;
++
++/* Fill `out` for item `i`. Return false to leave the row blank. */
++typedef bool (*zune_row_fn)(void *ctx, int i, zune_row *out);
++
++/* A vertical list of `count` rows inside `area`, scrolled so `pos` (the
++ * shelf's own continuous position) is in view, with `cursor` selected.
++ *
++ * A list that fits is laid out from the top and does not move; only the
++ * selection does. A longer one keeps the selection on the second row, so
++ * there is always one above it to say where you came from, and scrolls under
++ * it - wrapping, as the shelves do. */
++void zune_list(SDL_Renderer *r, const SDL_Rect *area, int count, float pos,
++               int cursor, zune_row_fn get, void *ctx, unsigned accent);
++
++/* The hub: the words, one per system, the selected one white. `pos` is the
++ * systems shelf's continuous position, so the column glides with it. */
++typedef const char *(*zune_word_fn)(void *ctx, int i);
++void zune_hub_words(SDL_Renderer *r, const SDL_Rect *area, int count,
++                    float pos, int cursor, zune_word_fn word, void *ctx);
++
++/* A square tile of art, contain-fitted on a dark square, as the hub's
++ * quickplay column draws them. */
++void zune_tile(SDL_Renderer *r, SDL_Texture *art, int aw, int ah,
++               const SDL_Rect *q, Uint8 alpha);
++
++/* ---- now playing --------------------------------------------------------- */
++
++typedef struct {
++	const char *artist, *album, *title;
++	const char *where;      /* "2 of 12", or a book's chapter */
++	const char *next;       /* the next track's name, or NULL */
++	const char *state;      /* NULL while playing, else "paused" and so on */
++	const char *hints;
++	double at, len;         /* seconds */
++	SDL_Texture *cover;
++	int glyph;              /* a ui_glyph for the play mode, or -1 */
++	unsigned now_ms;        /* the clock the artist's name drifts on */
++} zune_np;
++
++/* Returns how long until the picture would change by itself, in ms. */
++unsigned zune_now_playing(SDL_Renderer *r, const zune_np *np);
++
++#endif
+diff --git a/tools/controls-check.c b/tools/controls-check.c
+index 8326c0b..5a92970 100644
+--- a/tools/controls-check.c
++++ b/tools/controls-check.c
+@@ -95,7 +95,7 @@ static int pages_naming(const char *button)
+ 	for (p = 0; p < CTL_PAGES; p++) {
+ 		int here = 0;
+ 
+-		for (d = CTL_HORIZONTAL; d <= CTL_CUBIC; d++) {
++		for (d = CTL_HORIZONTAL; d <= CTL_ZUNE; d++) {
+ 			menu_row rows[CTL_MAX_ROWS];
+ 			int n = ctl_rows((ctl_page)p, (ctl_dir)d, rows), i;
+ 
+@@ -140,7 +140,7 @@ static void no_page_repeats(void)
+ 
+ 	printf("no page says a button twice\n");
+ 	for (p = 0; p < CTL_PAGES; p++)
+-		for (d = CTL_HORIZONTAL; d <= CTL_CUBIC; d++) {
++		for (d = CTL_HORIZONTAL; d <= CTL_ZUNE; d++) {
+ 			menu_row rows[CTL_MAX_ROWS];
+ 			int n = ctl_rows((ctl_page)p, (ctl_dir)d, rows), i, j;
+ 
+@@ -163,7 +163,7 @@ static void rows_fit(void)
+ 
+ 	printf("rows that sit still\n");
+ 	for (p = 0; p < CTL_PAGES; p++)
+-		for (d = CTL_HORIZONTAL; d <= CTL_CUBIC; d++) {
++		for (d = CTL_HORIZONTAL; d <= CTL_ZUNE; d++) {
+ 			menu_row rows[CTL_MAX_ROWS];
+ 			int n = ctl_rows((ctl_page)p, (ctl_dir)d, rows), i;
+ 			int rules = 0, notes = 0;
+-- 
+2.43.0
+
