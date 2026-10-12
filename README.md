@@ -1,19 +1,23 @@
 # Game Zune
 
 A **GKD Pixel 2** set up as an offline Game Boy / Game Boy Color / Game Boy Advance
-player and music player, with box art, album art, and a **Zune HD interface**.
+player and music player, with box art, album art, and the interface of the **original Zune**:
+the Zune 30, 80 and 120, the ones with buttons and a squircle pad, not the touchscreen Zune HD.
 
 It is [TortOS](https://github.com/ericreinsmidt/TortOS) (games + music + art, offline)
 with a Zune theme added to its launcher.
 
-| Hub | Games | Music | Album | Now playing |
-|---|---|---|---|---|
-| ![hub](docs/screenshots/hub-music.png) | ![games](docs/screenshots/games.png) | ![music](docs/screenshots/music-artists.png) | ![album](docs/screenshots/music-album.png) | ![now playing](docs/screenshots/now-playing.png) |
-| **Playlists** | **Genres** | **Artist** | **Jump list** | **Options** |
-| ![playlists](docs/screenshots/playlists.png) | ![genres](docs/screenshots/music-genres.png) | ![artist](docs/screenshots/music-artist.png) | ![jump list](docs/screenshots/music-jump.png) | ![options](docs/screenshots/music-options.png) |
+| Top menu | Game Boy | Games | Zune |
+|---|---|---|---|
+| ![top](docs/screenshots/top.png) | ![game boy](docs/screenshots/game-boy.png) | ![games](docs/screenshots/games.png) | ![zune](docs/screenshots/zune.png) |
+| **Albums** | **Songs (fast scroll)** | **Album** | **Artist** |
+| ![albums](docs/screenshots/music-albums.png) | ![songs](docs/screenshots/music-songs.png) | ![album](docs/screenshots/music-album.png) | ![artist](docs/screenshots/music-artist.png) |
+| **Playlists** | **Now playing** | **Now playing options** | **Options** |
+| ![playlists](docs/screenshots/music-playlists.png) | ![now playing](docs/screenshots/now-playing.png) | ![now playing options](docs/screenshots/now-playing-options.png) | ![options](docs/screenshots/music-options.png) |
 
 *(Screenshots are from the desktop build of the launcher with a demo card. It draws the
-same thing the handheld draws, at 1024×768; the Pixel 2 shows it at 640×480.)*
+same thing the handheld draws, at 1024×768; the Pixel 2 shows it at 640×480. The demo
+card has no real cover art, so the albums show the Zune's colorful stand-in pattern.)*
 
 > **Status:** the Zune theme builds for the Pixel 2 and links against the exact
 > libraries in the TortOS 1.6.0 image. It has **not been run on a real Pixel 2 yet**.
@@ -23,53 +27,70 @@ same thing the handheld draws, at 1024×768; the Pixel 2 shows it at 640×480.)*
 
 ## What you get
 
-- **Hub:** big lowercase words (`game boy`, `game boy color`, `game boy advance`, `music`).
-  The art for wherever you are in that shelf shows beside them, and "now playing" sits along the bottom.
-- **Game lists:** a huge heading that runs off the screen, with **pivots** for the sort order
-  (`name · play time · last played · recently added`). Below them is a list of box art and titles.
-  The selected title is in Zune magenta.
-- **Music, laid out like the Zune HD's collection:**
-  - pivots for **artists · albums · songs · playlists · genres** (and audiobooks if you have any);
-  - an **artist** page with their albums (by year) and songs;
-  - an **album** page with the cover and a numbered track list with lengths;
-  - **genre** pages;
-  - **shuffle all** at the top of songs;
-  - the **jump list** (letter tiles, lit where there is something under them);
-  - an **options** menu on anything: play, shuffle, add to now playing, play next, smart dj,
-    like / dislike.
-- **Smart DJ:** a mix of songs like an artist, album or song, built on the device from genres,
-  tags, era and tempo.
-- **Ratings:** a heart or a broken heart on any song. Disliked songs are left out of Smart DJ and
-  of every auto playlist.
-- **Quickplay on the hub:** with **music** selected, **history** (what you played last) and
-  **new** (what you added last) sit beside it. Press right to reach them.
-- **Now playing:**
-  - the artist's name drifts enormous across the top over a blurred copy of the cover;
-  - the cover, the track, your rating, a magenta progress line and what plays next;
-  - **down** opens the now-playing list.
+### The top menu: **zune** or **game boy**
+
+Turn it on and there are two words, in the Zune's very large lowercase type over a background
+picture: **zune** and **game boy**.
+
+- **zune** is everything music: **music** (and **now playing** while something plays), plus
+  **settings**.
+- **game boy** is the games: **game boy**, **game boy color** and **game boy advance**.
+
+B always goes back a level, all the way to these two words.
+
+### The original Zune's way of getting around
+
+This follows how the Zune 30/80/120 worked (firmware 2.x/3.x), from the reviews and guides of
+the time (see [Sources](#sources)):
+
+- **The twist.** Choose something and its sub-menus run across the top of the screen, the
+  current one bright and the rest fading off to the right; the list sits beneath.
+  **Left/Right** moves along that row, **Up/Down** through the list. In music the row is
+  **artists · albums · songs · playlists · genres** (audiobooks too, if you have any); in games
+  it is the three Game Boys, so Left/Right flips between systems.
+- **Inside an album, the other albums are the top row**, as tiny covers. Left/Right goes to the
+  album next door without going back.
+- **"shuffle all"** heads every music list, and **"play all"** heads an artist or an album.
+- **Scroll fast** (hold Up/Down) and the letter you've reached shows large on the left, as on
+  the Zune. **L1/R1** jump a whole letter.
+- **Now Playing** is the album art over about two thirds of the screen, with the song, artist
+  and album beneath it, a progress line and "2 of 12". With no cover it shows a colorful
+  pattern (one per album, always the same one), the way the first Zune did.
+- **The center button on Now Playing** (A, or X) brings up **rate this song**, **song list**
+  (what's queued), **shuffle** and **repeat**, like the Zune's.
+- **Options anywhere** (X, standing in for holding the center button): **play**, **shuffle**,
+  **add to now playing**, and **like / dislike / unrate** on a song.
+- **Ratings:** a heart or a broken heart, like the Zune's. Disliked songs are left out of every
+  auto playlist.
 - **Auto playlists** built from public music databases: chill, workout, dark wave, nostalgia,
   jazzy, party, crowd pleaser, heavy rotation and discover
   (see [Auto playlists](#5-auto-playlists)).
-- **Menus** switch to the same typeface, with flat black panels and a magenta accent.
+- **Your own background:** put a picture at `TortOS/wallpaper.jpg` (or `.png`) on the card and
+  every screen sits on it, darkened so the words read, as the Zune let you pick a background.
+  Without one you get the theme's magenta-and-blue blur (`TortOS/zune-wallpaper.jpg`).
 - The font is [Selawik](https://github.com/microsoft/Selawik), Microsoft's open-source
-  stand-in for Segoe, the Zune's typeface family.
+  stand-in for Segoe, the Zune's typeface family. Menus use it too.
 
 Everything else is stock TortOS: mGBA for all three Game Boys, the Muse music player,
 autosave/resume, favorites, Down To The Wire for files and art over USB.
 
 ### Controls on the Zune theme
 
-| Button | Games | Music |
-|---|---|---|
-| Up / Down | Move | Move |
-| Left / Right | Jump by letter | **Pivots** |
-| L1 / R1 | Change pivot (sort order) | Page up / down (on Now Playing: track) |
-| A / B | Open or play / back | Open or play / back |
-| X | Game details | **Options** (on Now Playing: rate) |
-| Y | Favorite | **Jump list** (on Now Playing: shuffle/repeat) |
-| START | — | Now playing |
-| SELECT | Music (from anywhere) | Close music |
-| MENU | TortOS menu (UI Theme is in here) | Music menu (rescan, lock screen…) |
+The Pixel 2's d-pad plays the Zune's squircle pad, **A** its center button, **START** its
+play/pause button and **B** its back button.
+
+| Button | Menus | Games | Music lists | Now Playing |
+|---|---|---|---|---|
+| Up / Down | Move | Move | Move (hold: fast, with the letter) | Volume |
+| Left / Right | — | **Twist**: next system | **Twist**: artists, albums… / next album | Skip (hold: scan) |
+| L1 / R1 | — | Jump by letter | Jump by letter | Previous / next song |
+| A | Open | Play | Open or play | **Options**: rate, song list, shuffle, repeat |
+| B | Back | Back | Back | Back |
+| X | — | Game details | **Options** | Options |
+| Y | — | Favorite | — | — |
+| START | — | — | Play / pause | Play / pause |
+| SELECT | Music | Music | Close music | Close music |
+| MENU | TortOS menu (UI Theme is in here) | TortOS menu | Music menu (rescan, lock…) | Music menu |
 
 ---
 
@@ -89,7 +110,7 @@ music player beside it, so the versions must match. The install script checks th
 
 ### 2. Install the Zune theme
 
-The ready-built files are in [`dist/TortOS/`](dist/TortOS): the launcher (`tortos.elf`) and its fonts.
+The ready-built files are in [`dist/TortOS/`](dist/TortOS): the launcher (`tortos.elf`), its fonts and its background picture (`zune-wallpaper.jpg`).
 
 **macOS / Linux:**
 
@@ -212,8 +233,8 @@ What it does:
 3. Reads what the **Pixel 2 recorded**: every song you listened to for 30 seconds or half its
    length is logged to `Music/.zune/plays.log`, and your hearts to `ratings.tsv`.
 4. Writes the nine playlists with Zune-style covers. It also writes `Music/.zune/library.tsv`,
-   which gives the Pixel 2 real song titles, genres (the **genres** pivot), years, lengths and
-   tags (for Smart DJ).
+   which gives the Pixel 2 real song titles, genres (the **genres** twist), years, lengths and
+   tags.
 
 Things to know:
 
@@ -283,13 +304,16 @@ CARD=/media/$USER/TORTOS scripts/preview.sh   # your own games and music (read o
 
 ### What the patch changes
 
-- `src/zune.c`, `src/zune.h` (new): the drawing. These are the panorama heading, pivots, art lists,
-  the hub's word column and quickplay tiles, and Now Playing.
+- `src/zune.c`, `src/zune.h` (new): the drawing - the main menu's words over the background
+  picture, the twist row (words or tiny covers), lists with "shuffle all" / "play all", the
+  fast-scroll letter, the options menu, hearts, the no-art pattern and Now Playing.
 - `src/main.c`:
   - Hooks the theme into the shelves, the Muse album shelf and Now Playing.
-  - Makes the list navigation run top to bottom, with L1/R1 as pivots. The sort-step code now lives in
-    one shared function, used by both the menu and the pivots.
-  - Adds `--theme`, `--sys`, `--sort` and `--zmusic` to the screenshot harness.
+  - The top menu (**zune** / **game boy**), the game boy menu, and the games list as a twist
+    across the three systems.
+  - Now Playing's Zune keys: A/X for its options, START play/pause, the pad to skip/scan and for
+    volume.
+  - Adds `--theme`, `--sys`, `--sort`, `--zmusic` and `--zlevel` to the screenshot harness.
 - `src/ui.c`, `src/ui.h`: switching the menu typeface at runtime, and flat panels.
 - `src/cards.h`: *Zune* as a third UI Theme, and the default.
 - `src/controls.*`: a Controls page for the Zune layout.
@@ -297,14 +321,14 @@ CARD=/media/$USER/TORTOS scripts/preview.sh   # your own games and music (read o
   live in other albums' folders. Each has its own cover location, and they are shown under a third
   shelf order, *Playlists*. Paths are resolved relative to the playlist, the card, or the `Music/`
   folder in a path from another computer, and never outside the card.
-- Third patch, the Zune music:
-  - `src/zune_music.h` (new, included into `main.c`): the collection's pages, the jump list, the
-    options menu, Smart DJ, quickplay and the now-playing list. It also reads `library.tsv`,
-    `plays.log` and `ratings.tsv`.
+- Third patch, the music collection's data:
+  - `src/zune_music.h` (new, included into `main.c`): reads `library.tsv`, `plays.log` and
+    `ratings.tsv`, and (since the fourth patch) is the twist browser and the zune menu.
   - `src/musec.*`, `src/musequeue.*`: counting a listen (30 s or half the song, seeking excluded),
     adding to the queue without interrupting it, and jumping within it.
-  - `src/zune.*`: text and track rows, hearts, the jump-list tiles and the options menu.
   - `src/device/brick.c`: the rest of the pad on the desktop build's keyboard, for driving it in tests.
+- Fourth patch: the original Zune's look in place of the third patch's Zune HD-style screens, and
+  the top menu.
 
 TortOS's own offline checks (`make check`) pass with the patches applied.
 `python3 -m unittest discover -s scripts/tests` tests the playlist rules against a fake web and
@@ -337,3 +361,18 @@ case, and the one with a real music library, so it is the base.
 - plumOS for Pixel 2: <https://github.com/game-de-it/plumOS-pixel2>
 - ROCKNIX releases: <https://github.com/ROCKNIX/distribution/releases> · Knulli: <https://github.com/knulli-cfw/knulli-linux/releases>
 - Pixel 2 specs: <https://retrocatalog.com/retro-handhelds/gkd-pixel-2>
+
+How the original Zune looked and worked:
+
+- Wikipedia: [Zune 30](https://en.wikipedia.org/wiki/Zune_30),
+  [Zune 80, 120](https://en.wikipedia.org/wiki/Zune_80,_120),
+  [Zune 4, 8, 16](https://en.wikipedia.org/wiki/Zune_4,_8,_16),
+  [Zune software version history](https://en.wikipedia.org/wiki/Zune_software_version_history)
+- Gizmodo, [Complete guide to Zune 2's software and firmware](https://gizmodo.com/complete-guide-to-zune-2s-software-and-firmware-321605)
+  and [Zune 3.0 software review](https://gizmodo.com/microsoft-zune-3-0-software-review-5051440)
+- Engadget, [New Zune review, part 2](https://www.engadget.com/2007-11-18-new-zune-review-part-2-upgrade-hardware-software-and-social.html)
+- Laptop Mag, [Zune 80GB review](https://www.laptopmag.com/reviews/mp3/microsoft-zune-80gb-and-zune-marketplace-software-v-2-1)
+- The Gadgeteer, [Zune 8GB review](https://the-gadgeteer.com/2008/03/21/zune_8gb/)
+- Futurelooks, [Zune 80GB review](https://www.futurelooks.com/microsoft-zune-80gb-digital-media-player-review/3/)
+- istartedsomething, [Zune v2 software: now playing](https://istartedsomething.com/20071113/zune-v2-software-now-playing/)
+- ITPro Today, [Zune 2 review, part 1: software](https://itprotoday.com/it-infrastructure/zune-2-review-part-1-software)

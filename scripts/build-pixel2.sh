@@ -76,6 +76,7 @@ OUT=$ROOT/dist/TortOS
 mkdir -p "$OUT/fonts"
 aarch64-linux-gnu-strip -o "$OUT/tortos.elf" "$T/build/tortos.elf"
 cp "$ROOT"/tortos-zune/fonts/*.ttf "$ROOT"/tortos-zune/fonts/OFL-Selawik.txt "$OUT/fonts/"
+cp "$ROOT"/tortos-zune/zune-wallpaper.jpg "$OUT/"
 echo "$TORTOS_VERSION" > "$OUT/ZUNE_FOR_VERSION"
 echo "done: $OUT"
 ls -l "$OUT" "$OUT/fonts"

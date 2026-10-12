@@ -42,6 +42,9 @@ fi
 [ -f "$T/tortos.elf.stock" ] || cp "$T/tortos.elf" "$T/tortos.elf.stock"
 mkdir -p "$T/fonts"
 cp "$DIST"/fonts/* "$T/fonts/"
+# The theme's own background. Yours, if you add one, is TortOS/wallpaper.jpg
+# (or .png) and is never touched here.
+cp "$DIST/zune-wallpaper.jpg" "$T/"
 cp "$DIST/tortos.elf" "$T/tortos.elf.new"
 mv -f "$T/tortos.elf.new" "$T/tortos.elf"
 sync

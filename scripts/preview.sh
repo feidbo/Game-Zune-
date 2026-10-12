@@ -116,6 +116,7 @@ rm -rf "$RUN" && mkdir -p "$RUN/cards" "$RUN/fonts"
 cp "$T/config/systems.cfg" "$T/res/singles.png" "$RUN/"
 cp -R "$T/res/cards/." "$RUN/cards/"
 cp "$ROOT"/tortos-zune/fonts/*.ttf "$RUN/fonts/"
+cp "$ROOT"/tortos-zune/zune-wallpaper.jpg "$RUN/"
 
 OUT=$ROOT/docs/screenshots
 mkdir -p "$OUT"
@@ -130,21 +131,19 @@ shot() { # name args...
 		2>&1 | grep wrote || true
 }
 mkdir -p "$WORK/preview-userdata" "$WORK/preview-shared"
-# Shelf order on the demo card: Game Boy, Game Boy Color, Game Boy Advance, music.
-shot hub            --sys 2
-shot hub-music      --sys 3
+# The top menu, then each side of it.
+shot top            --zlevel 0
+shot game-boy       --zlevel 1 --sys 0
 shot games          --sys 2 --screen games
-shot albums         --sys 3 --screen games
-shot playlists      --sys 3 --zmusic playlists
-shot now-playing    --nowplaying 2 1 41
-# The music collection, the Zune's way.
+shot zune           --sys 3 --zmusic zune
+# The music collection: the twist row across the top, the list beneath.
 shot music-artists  --sys 3 --zmusic artists
 shot music-albums   --sys 3 --zmusic albums
-shot music-songs    --sys 3 --zmusic songs
-shot music-genres   --sys 3 --zmusic genres
+shot music-songs    --sys 3 --zmusic songs+letter
+shot music-playlists --sys 3 --zmusic playlists
 shot music-artist   --sys 3 --zmusic artist:1
-shot music-album    --sys 3 --zmusic album:0
-shot music-jump     --sys 3 --zmusic songs+jump
-shot music-options  --sys 3 --zmusic albums+menu
-shot menu           --sys 2 --screen games --menu 1
+shot music-album    --sys 3 --zmusic album:1
+shot music-options  --sys 3 --zmusic albums+options
+shot now-playing    --nowplaying 2 1 41
+shot now-playing-options --nowplaying 2 1 41 --zmusic npoptions
 echo "screenshots in $OUT"
