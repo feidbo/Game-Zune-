@@ -6,9 +6,9 @@ player and music player, with box art, album art, and a **Zune HD interface**.
 It is [TortOS](https://github.com/ericreinsmidt/TortOS) (games + music + art, offline)
 with a Zune theme added to its launcher.
 
-| Hub | Games | Albums | Now playing |
-|---|---|---|---|
-| ![hub](docs/screenshots/hub.png) | ![games](docs/screenshots/games.png) | ![albums](docs/screenshots/albums.png) | ![now playing](docs/screenshots/now-playing.png) |
+| Hub | Games | Albums | Mood playlists | Now playing |
+|---|---|---|---|---|
+| ![hub](docs/screenshots/hub.png) | ![games](docs/screenshots/games.png) | ![albums](docs/screenshots/albums.png) | ![playlists](docs/screenshots/playlists.png) | ![now playing](docs/screenshots/now-playing.png) |
 
 *(Screenshots are from the desktop build of the launcher with a demo card. It draws the
 same thing the handheld draws, at 1024×768; the Pixel 2 shows it at 640×480.)*
@@ -26,7 +26,9 @@ same thing the handheld draws, at 1024×768; the Pixel 2 shows it at 640×480.)*
 - **Game lists:** a huge heading that runs off the screen, with **pivots** for the sort order
   (`name · play time · last played · recently added`). Below them is a list of box art and titles.
   The selected title is in Zune magenta.
-- **Music:** the same list for albums, with covers and artists. Pivots switch between artist and album order.
+- **Music:** the same list for albums, with covers and artists. Pivots switch between artist order,
+  album order and **playlists**, including mood playlists made from your own library
+  (see [Playlists, by mood](#5-playlists-by-mood)).
 - **Now playing:** the artist's name drifts enormous across the top, like on the Zune HD.
   Below it are the cover, the track, a magenta progress line and what plays next.
 - **Menus** switch to the same typeface, with flat black panels and a magenta accent.
@@ -85,9 +87,17 @@ Eject, put the card in the Pixel 2, power on. A fresh install starts in the Zune
 yours does not, open **MENU → UI Theme → Zune**. *Plain Jane* and *Fancy Pants* are still
 there if you want TortOS's own look back.
 
-### 3. Add games, music and art
+### 3. Load your games and music
 
-Card layout (only the folders you use. Empty systems are hidden):
+There are two ways onto the card. Use whichever is handier:
+
+- **Card reader:** power the Pixel 2 off, put the microSD in your computer, and copy into
+  the `TORTOS` drive. This is the fastest way for a big first load.
+- **USB cable, card left in:** on the Pixel 2 open **MENU → Down To The Wire**, then go to
+  **http://10.42.0.1** in your computer's browser and enter the PIN shown on the handheld.
+  Drag games and music onto the page. This is the easiest way to add a few things later.
+
+The card layout. Only make the folders you use; a system with no games is hidden:
 
 ```
 TORTOS/
@@ -95,21 +105,101 @@ TORTOS/
 │   ├── Game Boy/           Tetris (World).gb
 │   ├── Game Boy Color/     Pokemon - Crystal Version (USA, Europe).gbc
 │   └── Game Boy Advance/   Metroid Fusion (USA).gba
-│       └── .media/         Metroid Fusion (USA).png   ← box art, same name as the ROM
-├── Bios/gba_bios.bin       ← optional (GBA runs without it)
-└── Music/Artist/Album/01 - Track.flac  (+ cover.jpg, or covers embedded in the files)
+│       └── .media/         Metroid Fusion (USA).png      ← box art (step 4 fills these)
+├── Bios/gba_bios.bin                                      ← optional
+├── Music/
+│   └── Daft Punk/
+│       └── Discovery/      01 - One More Time.flac …  cover.jpg
+└── Playlists/              chill.m3u8, party.m3u8 …       ← step 5
 ```
 
-- **Formats:** `.gb .gbc .gba` (zipped is fine). Music: MP3, M4A/AAC, FLAC, Ogg, Opus, WAV.
-- **Art without Wi-Fi:** connect the Pixel 2 to your computer by USB and open **MENU → Down To The Wire**.
-  Go to **http://10.42.0.1** in your computer's browser and enter the PIN. Press
-  **Get Box Art and Album Covers**: box art comes from libretro's thumbnail collection and covers
-  from MusicBrainz, saved to the card. The same page lets you drag games and music on.
-- Box art is matched by ROM file name, so No-Intro-style names (`Game (USA).gba`) match best.
-  Anything it misses: drop a PNG with the ROM's name into `Roms/<system>/.media/`
-  (~512 px is plenty). For music, embed covers with [MusicBrainz Picard](https://picard.musicbrainz.org/)
-  or put a `cover.jpg` in the album folder.
-- Good tags matter: TortOS files albums under their artist from the tags.
+**Games**
+
+- Formats are `.gb`, `.gbc` and `.gba`. Zipped ROMs are fine.
+- Keep the **No-Intro names** your files usually come with, e.g. `Metroid Fusion (USA).gba`.
+  Box art is matched by file name, and the shelf shows the title without the `(USA)` part.
+  The Zune list puts the region underneath instead.
+- GBA plays without a BIOS. Add `Bios/gba_bios.bin` only if you want the boot logo.
+
+**Music**
+
+- Formats: MP3, M4A/AAC, FLAC, Ogg, Opus, WAV.
+- Muse browses **by folder**, so lay it out as `Music/Artist/Album/NN - Title.ext`.
+  If your files are messy, let [MusicBrainz Picard](https://picard.musicbrainz.org/) tag them and lay them out for you, all on your computer:
+  1. Drop your music in Picard, click **Cluster**, then **Lookup** (or **Scan**). Check the matches, then **Save**.
+  2. Under **Options → File Naming**, turn on **Move files** with the card's `Music` folder as
+     the destination, and **Rename files** with this format:
+     `$if2(%albumartist%,%artist%)/%album%/$num(%tracknumber%,2) - %title%`
+- Songs left loose at the top of `Music/` are gathered into an album called **Singles**.
+
+### 4. Get the box art and album covers
+
+The Pixel 2 has no Wi-Fi, so art comes in through your computer.
+
+**Easiest, both at once:** with the card in the Pixel 2, open **MENU → Down To The Wire**,
+go to **http://10.42.0.1** on your computer, and press **Get Box Art and Album Covers**.
+Your computer fetches box art from libretro's thumbnail collection and covers from MusicBrainz's
+Cover Art Archive, and saves them to the card. Run it again whenever you add things; it only
+fetches what is missing.
+
+**For anything it misses:**
+
+| | Where it goes | Tip |
+|---|---|---|
+| Box art | `Roms/<system>/.media/<ROM name>.png` | The [libretro-thumbnails](https://github.com/libretro-thumbnails) repos (`Nintendo_-_Game_Boy_Advance` → `Named_Boxarts`) have nearly everything. Save it under your ROM's exact file name, ~512 px. Or press **X** on a game on the device to change its cover. |
+| Album cover | `cover.jpg` in the album folder, **or** embedded in the files | Picard does this: **Options → Cover Art**, tick *Embed cover images into tags* and *Save cover images as separate files* (`cover`). 500–600 px is plenty. |
+
+Covers embedded in the files are found by themselves. The first time an album shows, Muse pulls
+its picture out of the music.
+
+### 5. Playlists, by mood
+
+The music player has a **playlists** pivot. Go to **music**, then use **L1/R1** to move from
+**artist** and **album** to **playlists**. It shows every `.m3u` / `.m3u8` file in the card's
+`Playlists/` folder, each with its own cover.
+
+![playlists](docs/screenshots/playlists.png)
+
+**Mood playlists made for you.** [`scripts/moodlists.py`](scripts/moodlists.py) runs on your
+computer with the card plugged in. It listens to a minute of every song and measures:
+
+- tempo
+- energy
+- brightness
+- major or minor key
+- how danceable it is
+- how busy it is
+
+Then it writes seven playlists with Zune-style covers:
+
+**chill · focus · energy · happy · rainy day · late night · party**
+
+```sh
+pip install -r scripts/requirements-moods.txt      # librosa, mutagen, pillow (+ ffmpeg for m4a/opus)
+python3 scripts/moodlists.py /Volumes/TORTOS       # Windows: python scripts\moodlists.py E:\
+```
+
+- **Moods are relative to your library.** "chill" is the calmest part of what *you* own.
+- **Tags can steer it.**
+  - A song's **MOOD** tag (set it in Mp3tag or Picard: `chill`, `happy`, `sad`, `workout`, `party`…)
+    puts it in that playlist whatever it sounds like.
+  - The **GENRE** tag nudges the guess (ambient leans chill, house leans party, and so on).
+- **Smart DJ mixes:** `--mix "sunday morning=Boards of Canada"` makes a playlist of the songs
+  that sound most like an artist, album or song. Repeat `--mix` for as many as you like.
+- **Size:** each playlist gets up to `--size 40` songs. A song goes in at most its two best moods,
+  so the playlists differ from one another. Each one is ordered by tempo, and the same artist is
+  not played twice in a row.
+- **Re-running:**
+  - The first run takes a while (roughly a second or two per song, using all your cores).
+  - What it heard is cached in `Playlists/.moods/`, so a re-run after adding music only listens to the new songs.
+  - It only ever replaces playlists it wrote itself.
+
+**Your own playlists** work too. Export an `.m3u` from iTunes/Music, foobar2000, MusicBee or
+VLC into `Playlists/`. Muse finds each song on the card by the `Music/…` part of its path, so
+`C:\Users\you\Music\Artist\Album\song.mp3` still works. If yours point somewhere else,
+`python3 scripts/moodlists.py /Volumes/TORTOS --fix-playlists` repoints them at the card's
+copies by file name (the original is kept as `.bak`). Give a playlist a cover by saving a
+picture as `Playlists/.media/<playlist name>.jpg`. Otherwise it uses its first song's album art.
 
 ---
 
@@ -143,7 +233,7 @@ scripts/build-pixel2.sh      # -> dist/TortOS/
 The script does four things:
 
 1. Clones TortOS at the pinned release and applies
-   [`tortos-zune/patches/0001-zune-theme.patch`](tortos-zune/patches/0001-zune-theme.patch).
+   the patches in [`tortos-zune/patches/`](tortos-zune/patches).
 2. Takes the SDL libraries out of that release's own Pixel 2 image (hash-checked).
 3. Cross-compiles the launcher against them.
 4. Puts it in `dist/` with the fonts.
@@ -164,10 +254,14 @@ CARD=/media/$USER/TORTOS scripts/preview.sh   # your own games and music (read o
   - Hooks the theme into the shelves, the Muse album shelf and Now Playing.
   - Makes the list navigation run top to bottom, with L1/R1 as pivots. The sort-step code now lives in
     one shared function, used by both the menu and the pivots.
-  - Adds `--theme`/`--sys` to the screenshot harness.
+  - Adds `--theme`, `--sys` and `--sort` to the screenshot harness.
 - `src/ui.c`, `src/ui.h`: switching the menu typeface at runtime, and flat panels.
 - `src/cards.h`: *Zune* as a third UI Theme, and the default.
 - `src/controls.*`: a Controls page for the Zune layout.
+- `src/muselib.*` (second patch): playlists. `Playlists/*.m3u` / `.m3u8` are read as albums whose tracks
+  live in other albums' folders. Each has its own cover location, and they are shown under a third
+  shelf order, *Playlists*. Paths are resolved relative to the playlist, the card, or the `Music/`
+  folder in a path from another computer, and never outside the card.
 
 TortOS's own offline checks (`make check`) pass with the patch applied.
 

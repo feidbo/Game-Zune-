@@ -61,13 +61,23 @@ demo_card() {
 	album "Boards of Canada" "Music Has the Right" "#40a0a0" 3
 	album "The Postal Service" "Give Up" "#5070e0" 3
 	album "Daft Punk" "Random Access Memories" "#c0a060" 3
+	# Two playlists, the way scripts/moodlists.py writes them, with covers.
+	mkdir -p "$c/Playlists/.media"
+	printf '#EXTM3U\n../Music/Boards of Canada/Music Has the Right/01 - Track 1.mp3\n../Music/Radiohead/In Rainbows/02 - Track 2.mp3\n../Music/The Postal Service/Give Up/01 - Track 1.mp3\n' \
+		> "$c/Playlists/chill.m3u8"
+	printf '#EXTM3U\n../Music/Daft Punk/Discovery/01 - Track 1.mp3\n../Music/Daft Punk/Discovery/02 - Track 2.mp3\n../Music/Radiohead/In Rainbows/01 - Track 1.mp3\n../Music/Daft Punk/Random Access Memories/03 - Track 3.mp3\n' \
+		> "$c/Playlists/party.m3u8"
+	convert -size 500x500 xc:"#40a0a8" -fill white -pointsize 110 -gravity southwest \
+	        -annotate +20+20 chill "$c/Playlists/.media/chill.jpg"
+	convert -size 500x500 xc:"#ff6020" -fill white -pointsize 110 -gravity southwest \
+	        -annotate +20+20 party "$c/Playlists/.media/party.jpg"
 }
 
 if [ -n "${CARD:-}" ]; then
 	C=$CARD
 else
 	C=$WORK/demo-card
-	[ -d "$C/Roms" ] || demo_card "$C"
+	[ -d "$C/Playlists" ] || demo_card "$C"
 fi
 # A private TortOS folder to run from, so a real card is only ever read.
 RUN=$WORK/preview-root
@@ -94,6 +104,7 @@ shot hub            --sys 2
 shot hub-music      --sys 3
 shot games          --sys 2 --screen games
 shot albums         --sys 3 --screen games
+shot playlists      --sys 3 --screen games --sort 2
 shot now-playing    --nowplaying 2 1 41
 shot menu           --sys 2 --screen games --menu 1
 echo "screenshots in $OUT"
