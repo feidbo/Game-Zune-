@@ -1,0 +1,702 @@
+From b43be5b475a9240484587f26144ad6b878aa02c2 Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Tue, 13 Oct 2026 04:10:46 +0000
+Subject: [PATCH] Zune music: liked songs
+
+Y on Now Playing likes the song, or unlikes it: a heart, a note for a
+moment, and the song at the end of liked songs - first among the
+playlists, with a heart for its cover. A like from a list's options does
+the same.
+
+The order is kept on the card as Playlists/liked songs.m3u8, an
+ordinary playlist; ratings.tsv stays what says a song is liked. The menu
+shows the list from memory, so a like is there at once without a rescan,
+and the scanned copy of the file is not shown twice. A song put on the
+file by hand counts as liked; one disliked comes off.
+---
+ src/controls.c   |   7 +-
+ src/main.c       |  12 +-
+ src/zune.c       |  38 +++++--
+ src/zune.h       |   8 +-
+ src/zune_music.h | 288 ++++++++++++++++++++++++++++++++++++++++-------
+ 5 files changed, 296 insertions(+), 57 deletions(-)
+
+diff --git a/src/controls.c b/src/controls.c
+index 65c5c92..a8fcb46 100644
+--- a/src/controls.c
++++ b/src/controls.c
+@@ -138,8 +138,9 @@ static int muse(menu_row *out)
+ }
+ 
+ /* Music in the Zune theme: the twist, the options that stand in for the
+- * Zune's held center button, and L1/R1 by letter as the lists' own page
+- * says. On Now Playing A or X opens rate, song list, shuffle and repeat. */
++ * Zune's held center button (L1/R1 by letter is on the moving page, as in
++ * the games). On Now Playing A or X opens rate, song list, shuffle and
++ * repeat, and Y likes the song, which puts it on liked songs. */
+ static int zune_music(menu_row *out)
+ {
+ 	int n = 0;
+@@ -149,8 +150,8 @@ static int zune_music(menu_row *out)
+ 	 * button. */
+ 	out[n++] = (menu_row){ "Left/Right", "Twist, or skip",  false };
+ 	out[n++] = (menu_row){ "X",          "Options",         false };
+-	out[n++] = (menu_row){ "L1/R1",      "Jump by letter",  false };
+ 	out[n++] = (menu_row){ "START",      "Play or pause",   false };
++	out[n++] = (menu_row){ "Y",          "Like: to liked songs", false };
+ 	out[n++] = (menu_row){ fn_volume ? "FN+both Vol" : "F1+F2", "Lock, held", false };
+ 	return n;
+ }
+diff --git a/src/main.c b/src/main.c
+index 7cd74d7..d912795 100644
+--- a/src/main.c
++++ b/src/main.c
+@@ -493,6 +493,8 @@ static void zune_menu_screen(app *a);
+ static void zune_np_options(app *a);
+ static void zm_playing_line(app *a);
+ static int  zx_rating_now(void);
++static void zx_like_now(void);
++static const char *zx_note_now(unsigned *left);
+ static void zc_flush(void);
+ static void zune_music_shot(app *a, const char *spec);
+ static void zx_on_played(const char *path);
+@@ -3336,7 +3338,7 @@ static unsigned zune_np_draw(app *a, const mu_now *mn, const char *next)
+ 	zune_np z = { 0 };
+ 	char where[64] = "";
+ 	const char *p;
+-	unsigned h = 2166136261u;
++	unsigned h = 2166136261u, note_left = 0, wait;
+ 	muq_mode m = musec_mode();
+ 
+ 	(void)next;
+@@ -3354,7 +3356,10 @@ static unsigned zune_np_draw(app *a, const mu_now *mn, const char *next)
+ 	z.rating = musec_is_book() ? 0 : zx_rating_now();
+ 	z.shuffle = !musec_is_book() && m == MUQ_SHUFFLE;
+ 	z.repeat = musec_is_book() ? 0 : m == MUQ_REPEAT_ALL ? 1 : m == MUQ_REPEAT_ONE ? 2 : 0;
+-	return zune_now_playing(a->r, &z);
++	z.note = zx_note_now(&note_left);
++	wait = zune_now_playing(a->r, &z);
++	/* Drawn again the moment the note is due to go. */
++	return z.note && note_left < wait ? note_left : wait;
+ }
+ 
+ static void draw_systems(app *a)
+@@ -8880,7 +8885,7 @@ static muse_exit muse_now_screen(app *a)
+ 			 * song list, shuffle, repeat) - A, or X as everywhere else in the
+ 			 * theme - play/pause on its own button, START here, and the pad's
+ 			 * left and right a tap to skip and held to scan, up and down the
+-			 * volume. */
++			 * volume. Y likes the song: it goes on liked songs. */
+ 			static bool was[2], scanned[2];
+ 			int k;
+ 
+@@ -8890,6 +8895,7 @@ static muse_exit muse_now_screen(app *a)
+ 				continue;
+ 			}
+ 			if (a->in.pressed[IN_START]) musec_toggle();
++			if (a->in.pressed[IN_Y]) zx_like_now();
+ 			if (in_repeat(&a->in, IN_UP))   plat_volume_nudge(+1);
+ 			if (in_repeat(&a->in, IN_DOWN)) plat_volume_nudge(-1);
+ 			for (k = 0; k < 2; k++) {
+diff --git a/src/zune.c b/src/zune.c
+index caa7147..31b0ee8 100644
+--- a/src/zune.c
++++ b/src/zune.c
+@@ -261,6 +261,12 @@ void zune_twist_text(SDL_Renderer *r, const char *const *items, int n, int sel,
+ 	SDL_RenderSetClipRect(r, NULL);
+ }
+ 
++static void cover_tile(SDL_Renderer *r, const zune_cover *c, const SDL_Rect *q, Uint8 alpha)
++{
++	if (c->heart) zune_heart_tile(r, q, alpha);
++	else zune_tile(r, c->art, c->w, c->h, q, alpha);
++}
++
+ void zune_twist_covers(SDL_Renderer *r, const zune_cover *c, int n, int sel,
+                        const char *name, float slide)
+ {
+@@ -270,21 +276,18 @@ void zune_twist_covers(SDL_Renderer *r, const zune_cover *c, int n, int sel,
+ 
+ 	if (n <= 0) return;
+ 	SDL_RenderSetClipRect(r, &(SDL_Rect){ 0, 0, TORTOS_SCREEN_W - 96, 124 });
+-	if (n > 1) {
+-		const zune_cover *p = &c[(sel + n - 1) % n];
+-
+-		zune_tile(r, p->art, p->w, p->h, &(SDL_Rect){ x - small - 14, y + (big - small) / 2, small, small }, 70);
+-	}
+-	zune_tile(r, c[sel].art, c[sel].w, c[sel].h, &(SDL_Rect){ x, y, big, big }, 255);
++	if (n > 1)
++		cover_tile(r, &c[(sel + n - 1) % n],
++		           &(SDL_Rect){ x - small - 14, y + (big - small) / 2, small, small }, 70);
++	cover_tile(r, &c[sel], &(SDL_Rect){ x, y, big, big }, 255);
+ 	x += big + 18;
+ 	if (name && name[0]) {
+ 		zune_lower(name, low, sizeof low);
+ 		x += zune_text_fit(r, f, low, x, y + (big - (f ? TTF_FontHeight(f) : 50)) / 2, 380, ZUNE_WHITE) + 24;
+ 	}
+ 	for (k = 1; k < n && x < TORTOS_SCREEN_W; k++) {
+-		const zune_cover *q = &c[(sel + k) % n];
+-
+-		zune_tile(r, q->art, q->w, q->h, &(SDL_Rect){ x, y + (big - small) / 2, small, small }, k == 1 ? 150 : 100);
++		cover_tile(r, &c[(sel + k) % n], &(SDL_Rect){ x, y + (big - small) / 2, small, small },
++		           k == 1 ? 150 : 100);
+ 		x += small + 12;
+ 	}
+ 	SDL_RenderSetClipRect(r, NULL);
+@@ -320,6 +323,15 @@ void zune_tile(SDL_Renderer *r, SDL_Texture *art, int aw, int ah,
+ 	SDL_SetTextureAlphaMod(art, 255);
+ }
+ 
++void zune_heart_tile(SDL_Renderer *r, const SDL_Rect *q, Uint8 alpha)
++{
++	SDL_SetRenderDrawBlendMode(r, SDL_BLENDMODE_BLEND);
++	SDL_SetRenderDrawColor(r, (Uint8)(ZUNE_ACCENT >> 16), (Uint8)(ZUNE_ACCENT >> 8),
++	                       (Uint8)ZUNE_ACCENT, alpha);
++	SDL_RenderFillRect(r, q);
++	zune_heart(r, q->x + q->w / 2, q->y + q->h / 2, q->w / 2, (SDL_Color){ 255, 255, 255, alpha }, false);
++}
++
+ void zune_pattern(SDL_Renderer *r, const SDL_Rect *q, unsigned seed)
+ {
+ 	/* The Zune's own colors: orange, magenta, the blues and greens of its
+@@ -395,7 +407,8 @@ static void list_row(SDL_Renderer *r, const zune_list_style *st, const zune_row
+ 	if (st->art) {
+ 		SDL_Rect art = { tx, y + (st->row_h - st->art) / 2, st->art, st->art };
+ 
+-		if (!row->lead) zune_tile(r, row->art, row->aw, row->ah, &art, 255);
++		if (row->heart) zune_heart_tile(r, &art, 255);
++		else if (!row->lead) zune_tile(r, row->art, row->aw, row->ah, &art, 255);
+ 		tx += st->art + 22;
+ 		tw -= st->art + 22;
+ 	}
+@@ -548,7 +561,10 @@ unsigned zune_now_playing(SDL_Renderer *r, const zune_np *np)
+ 		snprintf(t1, sizeof t1, "-%s", rem);
+ 		zune_text(r, fm, t1, x + w, bar - 34, 1, ZUNE_SOFT);
+ 	}
+-	if (np->state || (np->where && np->where[0])) {
++	if (np->note) {
++		zune_lower(np->note, low, sizeof low);
++		zune_text(r, fm, low, TORTOS_SCREEN_W / 2, bar - 34, 0, zune_rgb(ZUNE_ACCENT, 255));
++	} else if (np->state || (np->where && np->where[0])) {
+ 		char mid[96];
+ 
+ 		snprintf(mid, sizeof mid, "%s%s%s", np->state ? np->state : "",
+diff --git a/src/zune.h b/src/zune.h
+index 057cff6..4cd0ce8 100644
+--- a/src/zune.h
++++ b/src/zune.h
+@@ -84,7 +84,7 @@ void zune_twist_text(SDL_Renderer *r, const char *const *items, int n, int sel,
+ 
+ /* The same row for albums: tiny covers, the current one larger with its
+  * name beside it. */
+-typedef struct { SDL_Texture *art; int w, h; } zune_cover;
++typedef struct { SDL_Texture *art; int w, h; bool heart; } zune_cover;
+ void zune_twist_covers(SDL_Renderer *r, const zune_cover *covers, int n, int sel,
+                        const char *name, float slide);
+ 
+@@ -95,6 +95,9 @@ void zune_letter(SDL_Renderer *r, char c, Uint8 alpha);
+ void zune_tile(SDL_Renderer *r, SDL_Texture *art, int aw, int ah,
+                const SDL_Rect *q, Uint8 alpha);
+ 
++/* The cover "liked songs" has: a white heart on Zune magenta. */
++void zune_heart_tile(SDL_Renderer *r, const SDL_Rect *q, Uint8 alpha);
++
+ /* What stands in for missing art: the first Zune's colorful pattern, from a
+  * seed (the album's name), so one album always gets the same one. */
+ void zune_pattern(SDL_Renderer *r, const SDL_Rect *q, unsigned seed);
+@@ -114,6 +117,7 @@ typedef struct {
+ 	const char *right;  /* right-aligned and quiet: a duration */
+ 	int rating;         /* 1 a heart, -1 a broken one, 0 nothing */
+ 	bool lead;          /* "shuffle all" / "play all": no art, no number */
++	bool heart;         /* the heart tile in place of art: liked songs */
+ } zune_row;
+ 
+ typedef bool (*zune_row_fn)(void *ctx, int i, zune_row *out);
+@@ -146,6 +150,8 @@ typedef struct {
+ 	int rating;             /* 1 liked, -1 disliked */
+ 	bool shuffle;
+ 	int repeat;             /* 0 off, 1 all, 2 one */
++	const char *note;       /* for a moment, in place of `state` and `where`:
++	                           "added to liked songs" */
+ } zune_np;
+ 
+ /* Returns how long until the picture would change by itself, in ms. */
+diff --git a/src/zune_music.h b/src/zune_music.h
+index eeb9f43..fa9d073 100644
+--- a/src/zune_music.h
++++ b/src/zune_music.h
+@@ -22,7 +22,14 @@
+  * length - comes from Music/.zune/library.tsv, which scripts/zunesync.py
+  * writes from the tags and the public databases. Without it everything still
+  * works from the folder names, and genres is simply not offered.
+- * Plays and ratings are kept beside it, in plays.log and ratings.tsv. */
++ * Plays and ratings are kept beside it, in plays.log and ratings.tsv.
++ *
++ * Liked songs: a song rated "like" goes on Playlists/liked songs.m3u8, in the
++ * order liked, kept by this file - the card's own playlist, so the computer
++ * and other players see it too. ratings.tsv says what is liked; the playlist
++ * is the order. A song put on the playlist by hand counts as liked, and one
++ * disliked comes off it. The menu shows the list from memory, so a like is
++ * there at once, without the rescan a new playlist file would need. */
+ 
+ #define ZX_DIR "Music/.zune"
+ 
+@@ -41,6 +48,8 @@ static int        *zx_alb;                   /* real track -> its album */
+ static int        *zx_plays;
+ static long       *zx_last;                  /* when last heard, per real track */
+ static signed char *zx_rate;
++static int        *zx_liked, zx_nliked;      /* real tracks, in the order liked */
++static unsigned    zx_liked_ver;             /* changes when zx_liked does */
+ static long       *zx_added;                 /* per album: its folder's mtime */
+ static long       *zx_heard;                 /* per album: last heard */
+ static int        *zx_hash, zx_hcap;         /* path -> real track */
+@@ -73,21 +82,24 @@ static void zx_free(void)
+ 
+ 	free(zx_m); free(zx_blob); free(zx_real); free(zx_alb); free(zx_plays);
+ 	free(zx_last); free(zx_rate); free(zx_added); free(zx_heard); free(zx_hash);
++	free(zx_liked);
+ 	for (i = 0; i < zx_ngenre; i++) free(zx_genre[i]);
+ 	free(zx_genre);
+ 	zx_m = NULL; zx_blob = NULL; zx_real = zx_alb = zx_plays = NULL;
+ 	zx_last = zx_added = zx_heard = NULL; zx_rate = NULL; zx_hash = NULL;
++	zx_liked = NULL; zx_nliked = 0; zx_liked_ver++;
+ 	zx_genre = NULL; zx_ngenre = 0; zx_hcap = 0; zx_have_index = false;
+ }
+ 
+-static char *zx_slurp(const char *rel, size_t *len)
++/* A file on the card, whole and NUL-terminated; `rel` is from the card. */
++static char *zx_slurp_card(const char *rel, size_t *len)
+ {
+ 	char path[LIB_PATH * 2];
+ 	FILE *f;
+ 	char *b = NULL;
+ 	long n;
+ 
+-	snprintf(path, sizeof path, "%s/%s/%s", P_CARD, ZX_DIR, rel);
++	snprintf(path, sizeof path, "%s/%s", P_CARD, rel);
+ 	if (!(f = fopen(path, "rb"))) return NULL;
+ 	if (fseek(f, 0, SEEK_END) == 0 && (n = ftell(f)) >= 0 && n < 64L * 1024 * 1024 &&
+ 	    fseek(f, 0, SEEK_SET) == 0 && (b = malloc((size_t)n + 1)) &&
+@@ -102,6 +114,37 @@ static char *zx_slurp(const char *rel, size_t *len)
+ 	return b;
+ }
+ 
++static char *zx_slurp(const char *rel, size_t *len)
++{
++	char path[LIB_PATH];
++
++	snprintf(path, sizeof path, "%s/%s", ZX_DIR, rel);
++	return zx_slurp_card(path, len);
++}
++
++/* Write `body(f)` to the card's `rel` whole or not at all: a new file,
++ * flushed to the card, then renamed over the old one. */
++static bool zx_write_card(const char *rel, void (*body)(FILE *f))
++{
++	char file[LIB_PATH * 2], tmp[LIB_PATH * 2 + 8], *slash;
++	FILE *f;
++	bool ok;
++
++	snprintf(file, sizeof file, "%s/%s", P_CARD, rel);
++	if ((slash = strrchr(file, '/'))) {
++		*slash = '\0';
++		mkdir(file, 0755);
++		*slash = '/';
++	}
++	snprintf(tmp, sizeof tmp, "%s.new", file);
++	if (!(f = fopen(tmp, "w"))) return false;
++	body(f);
++	ok = fflush(f) == 0 && fsync(fileno(f)) == 0;
++	ok = fclose(f) == 0 && ok;
++	if (!ok || rename(tmp, file) != 0) { remove(tmp); return false; }
++	return true;
++}
++
+ /* The next tab-separated field of `*p`, cut out in place. */
+ static char *zx_field(char **p)
+ {
+@@ -124,6 +167,83 @@ static bool zx_is_music(int al)
+ 	       !g_muse.albums[al].playlist;
+ }
+ 
++/* ---- liked songs -------------------------------------------------------------- */
++
++#define ZX_LIKED_NAME "liked songs"
++#define ZX_LIKED_FILE ML_PLAYLISTS_DIR "/" ZX_LIKED_NAME ".m3u8"
++
++static const char *zx_note;          /* "added to liked songs", on Now Playing */
++static unsigned    zx_note_until;
++
++static void zx_ratings_body(FILE *f)
++{
++	int i;
++
++	for (i = 0; i < g_muse.ntracks; i++)
++		if (zx_real[i] == i && zx_rate[i])
++			fprintf(f, "%s\t%d\n", g_muse.tracks[i].path, zx_rate[i]);
++}
++
++static void zx_liked_body(FILE *f)
++{
++	int i;
++
++	fprintf(f, "#EXTM3U\n# kept by Game Zune on the Pixel 2: the songs you like, in the order you"
++	           " liked them. Like or unlike a song there to change it.\n");
++	for (i = 0; i < zx_nliked; i++) {
++		int r = zx_liked[i];
++		const zx_meta *m = &zx_m[r];
++
++		if (m->title && m->title[0])
++			fprintf(f, "#EXTINF:%d,%s - %s\n", m->secs > 0 ? m->secs : -1, m->title,
++			        m->artist ? m->artist : "");
++		fprintf(f, "../%s\n", g_muse.tracks[r].path);
++	}
++}
++
++static int zx_liked_at(int r)
++{
++	int i;
++
++	for (i = 0; i < zx_nliked; i++) if (zx_liked[i] == r) return i;
++	return -1;
++}
++
++/* What is liked, in order: the playlist's lines first, then any song rated
++ * "like" that is not on it (liked before there was a playlist). The file is
++ * written again when that is not what it says. */
++static void zx_liked_load(void)
++{
++	int n = g_muse.ntracks, i, lines = 0;
++	bool rated = false, *on = calloc((size_t)n, sizeof *on);
++	char *b = zx_slurp_card(ZX_LIKED_FILE, NULL), *line, *next, rel[LIB_PATH * 2];
++
++	zx_nliked = 0;
++	zx_liked_ver++;
++	if (!on) { free(b); return; }
++	for (line = b; line; line = next) {
++		int r;
++
++		next = strchr(line, '\n');
++		if (next) *next++ = '\0';
++		if (strchr(line, '\r')) *strchr(line, '\r') = '\0';
++		if (!line[0] || line[0] == '#') continue;
++		lines++;
++		if (!ml_playlist_resolve(P_CARD, line, rel, sizeof rel) || (r = zx_find(rel)) < 0 ||
++		    on[r] || zx_rate[r] < 0)
++			continue;
++		if (!zx_rate[r]) { zx_rate[r] = 1; rated = true; }
++		on[r] = true;
++		zx_liked[zx_nliked++] = r;
++	}
++	free(b);
++	for (i = 0; i < n; i++)
++		if (zx_real[i] == i && zx_rate[i] > 0 && !on[i]) zx_liked[zx_nliked++] = i;
++	free(on);
++	if (rated) zx_write_card(ZX_DIR "/ratings.tsv", zx_ratings_body);
++	if (zx_nliked != lines) zx_write_card(ZX_LIKED_FILE, zx_liked_body);
++}
++
+ static void zx_build(void)
+ {
+ 	int n = g_muse.ntracks, i, al;
+@@ -140,10 +260,11 @@ static void zx_build(void)
+ 	zx_plays = calloc((size_t)n, sizeof *zx_plays);
+ 	zx_last = calloc((size_t)n, sizeof *zx_last);
+ 	zx_rate = calloc((size_t)n, sizeof *zx_rate);
++	zx_liked = malloc(sizeof *zx_liked * (size_t)n);
+ 	zx_added = calloc((size_t)(g_muse.nalbums + 1), sizeof *zx_added);
+ 	zx_heard = calloc((size_t)(g_muse.nalbums + 1), sizeof *zx_heard);
+ 	if (!zx_hash || !zx_m || !zx_real || !zx_alb || !zx_plays || !zx_last || !zx_rate ||
+-	    !zx_added || !zx_heard) {
++	    !zx_liked || !zx_added || !zx_heard) {
+ 		zx_free();
+ 		zx_gen = g_muse_gen;
+ 		return;
+@@ -232,6 +353,7 @@ static void zx_build(void)
+ 		}
+ 		free(b);
+ 	}
++	zx_liked_load();
+ 	/* The genres, once each, whatever their case. */
+ 	if (zx_have_index) {
+ 		zx_genre = calloc((size_t)n, sizeof *zx_genre);
+@@ -308,27 +430,54 @@ static void zx_on_played(const char *path)
+ 	}
+ }
+ 
++/* Rate a song: 1 like, -1 dislike, 0 neither. A like puts it at the end of
++ * liked songs; anything else takes it off. */
+ static void zx_rate_set(int t, int v)
+ {
+-	char dir[LIB_PATH * 2], file[LIB_PATH * 2 + 16], tmp[LIB_PATH * 2 + 24];
+-	FILE *f;
+-	int i;
++	int r, at;
+ 
+ 	zx_ensure();
+-	if (!zx_rate) return;
+-	zx_rate[zx_r(t)] = (signed char)v;
+-	snprintf(dir, sizeof dir, "%s/%s", P_CARD, ZX_DIR);
+-	mkdir(dir, 0755);
+-	snprintf(file, sizeof file, "%s/ratings.tsv", dir);
+-	snprintf(tmp, sizeof tmp, "%s.new", file);
+-	if (!(f = fopen(tmp, "w"))) return;
+-	for (i = 0; i < g_muse.ntracks; i++)
+-		if (zx_real[i] == i && zx_rate[i])
+-			fprintf(f, "%s\t%d\n", g_muse.tracks[i].path, zx_rate[i]);
+-	fflush(f);
+-	fsync(fileno(f));
+-	fclose(f);
+-	rename(tmp, file);
++	if (!zx_rate || t < 0 || t >= g_muse.ntracks) return;
++	r = zx_r(t);
++	if (zx_rate[r] == v) return;
++	zx_rate[r] = (signed char)v;
++	zx_write_card(ZX_DIR "/ratings.tsv", zx_ratings_body);
++	at = zx_liked_at(r);
++	if (v > 0 && at < 0) {
++		zx_liked[zx_nliked++] = r;
++		zx_note = "added to " ZX_LIKED_NAME;
++	} else if (v <= 0 && at >= 0) {
++		memmove(&zx_liked[at], &zx_liked[at + 1], sizeof *zx_liked * (size_t)(zx_nliked - at - 1));
++		zx_nliked--;
++		zx_note = "removed from " ZX_LIKED_NAME;
++	} else {
++		return;
++	}
++	zx_liked_ver++;
++	zx_note_until = plat_now_ms() + 2000;
++	zx_write_card(ZX_LIKED_FILE, zx_liked_body);
++}
++
++/* The note Now Playing shows for a moment after a like, and for how much
++ * longer; NULL when there is none. */
++static const char *zx_note_now(unsigned *left)
++{
++	unsigned now = plat_now_ms();
++
++	if (!zx_note || (int)(zx_note_until - now) <= 0) { zx_note = NULL; return NULL; }
++	*left = zx_note_until - now;
++	return zx_note;
++}
++
++/* Y on Now Playing: like the song, or unlike it. */
++static void zx_like_now(void)
++{
++	const char *t = musec_track(musec_now()->index);
++	int r;
++
++	zx_ensure();
++	if (!zx_m || !t || (r = zx_find(t)) < 0) return;
++	zx_rate_set(r, zx_rate[r] > 0 ? 0 : 1);
+ }
+ 
+ /* ---- covers, small, for lists ---------------------------------------------- */
+@@ -425,9 +574,32 @@ typedef struct {
+ 	int lead;             /* row 0 is "shuffle all" or "play all", ids from row 1 */
+ 	int album;            /* ZL_TRACKS: whose */
+ 	int cursor;
++	unsigned liked_ver;   /* zx_liked_ver when filled */
+ 	coverflow cf;
+ } zlist;
+ 
++/* Liked songs stands in the lists as one album past the last: an id no
++ * real album has, which the helpers below answer for. */
++static bool zx_is_liked(int al) { return al == g_muse.nalbums; }
++
++static const char *zx_al_name(int al)
++{
++	return zx_is_liked(al) ? ZX_LIKED_NAME : g_muse.albums[al].name;
++}
++
++/* A list of songs from anywhere, numbered in its own order. */
++static bool zx_al_mixed(int al) { return zx_is_liked(al) || g_muse.albums[al].playlist; }
++static bool zx_al_book(int al)  { return !zx_is_liked(al) && g_muse.albums[al].book; }
++static int  zx_al_count(int al) { return zx_is_liked(al) ? zx_nliked : g_muse.albums[al].n; }
++
++static int zx_al_tracks(int al, int *out, int cap)
++{
++	int i, n = zx_al_count(al) < cap ? zx_al_count(al) : cap;
++
++	for (i = 0; i < n; i++) out[i] = zx_is_liked(al) ? zx_liked[i] : g_muse.albums[al].first + i;
++	return n;
++}
++
+ static int zl_rows(const zlist *l) { return l->n + (l->lead ? 1 : 0); }
+ static int zl_id(const zlist *l, int row)
+ {
+@@ -497,8 +669,12 @@ static void zl_fill(zlist *l, zl_kind kind, int id)
+ 		zl_sort(l->ids, l->n, "album");
+ 		break;
+ 	case ZL_PLAYLISTS:
++		/* Liked songs first, from memory; its file, when the scan read it
++		 * too, is the same list and not shown twice. */
++		if (zx_nliked > 0) l->ids[l->n++] = g_muse.nalbums;
+ 		for (al = 0; al < g_muse.nalbums; al++)
+-			if (g_muse.albums[al].playlist) l->ids[l->n++] = al;
++			if (g_muse.albums[al].playlist && strcasecmp(g_muse.albums[al].name, ZX_LIKED_NAME))
++				l->ids[l->n++] = al;
+ 		break;
+ 	case ZL_BOOKS:
+ 		for (al = 0; al < g_muse.nalbums; al++)
+@@ -527,21 +703,19 @@ static void zl_fill(zlist *l, zl_kind kind, int id)
+ 				l->ids[l->n++] = al;
+ 		zl_sort(l->ids, l->n, "album");
+ 		break;
+-	case ZL_TRACKS: {
+-		const ml_album *a = &g_muse.albums[id];
+-
+-		for (i = a->first; i < a->first + a->n; i++) l->ids[l->n++] = i;
++	case ZL_TRACKS:
++		l->n = zx_al_tracks(id, l->ids, cap);
+ 		l->album = id;
+ 		break;
+ 	}
+-	}
+ 	/* "At the top of every view is a 'shuffle all'", and under an artist or
+ 	 * inside an album, "play all". */
+ 	if (l->n > 0) {
+ 		if (kind == ZL_ARTISTS || kind == ZL_ALBUMS || kind == ZL_SONGS) l->lead = ZL_SHUFFLE_ALL;
+ 		if (kind == ZL_ARTIST_ALBUMS || kind == ZL_GENRE_ALBUMS ||
+-		    (kind == ZL_TRACKS && !g_muse.albums[id].book)) l->lead = ZL_PLAY_ALL;
++		    (kind == ZL_TRACKS && !zx_al_book(id))) l->lead = ZL_PLAY_ALL;
+ 	}
++	l->liked_ver = zx_liked_ver;
+ 	cf_reset(&l->cf, 0);
+ }
+ 
+@@ -557,7 +731,7 @@ static char zl_letter(const zlist *l, int row)
+ 	case ZL_ARTISTS: s = g_muse.artists[id].name; break;
+ 	case ZL_GENRES:  s = zx_genre[id]; break;
+ 	case ZL_SONGS: case ZL_TRACKS: s = zx_title(id); break;
+-	default:         s = g_muse.albums[id].name; break;
++	default:         s = zx_al_name(id); break;
+ 	}
+ 	if (s[0] >= 'a' && s[0] <= 'z') return s[0];
+ 	if (s[0] >= 'A' && s[0] <= 'Z') return (char)(s[0] + 32);
+@@ -626,7 +800,7 @@ static bool zrow_get(void *ctx, int i, zune_row *out)
+ 		int r = zx_r(id);
+ 
+ 		out->title = zx_title(id);
+-		if (g_muse.albums[l->album].playlist) {
++		if (zx_al_mixed(l->album)) {
+ 			snprintf(sub, sizeof sub, "%s", zx_track_artist(id));
+ 			out->sub = sub;
+ 			snprintf(num, sizeof num, "%d", i);
+@@ -648,8 +822,18 @@ static bool zrow_get(void *ctx, int i, zune_row *out)
+ 		out->rating = zx_rate[zx_r(id)];
+ 		break;
+ 	default: {           /* albums of every kind */
+-		const ml_album *al = &g_muse.albums[id];
+-		int y = zx_album_year(id);
++		const ml_album *al;
++		int y;
++
++		if (zx_is_liked(id)) {
++			out->heart = true;
++			out->title = ZX_LIKED_NAME;
++			snprintf(sub, sizeof sub, "%d song%s", zx_nliked, zx_nliked == 1 ? "" : "s");
++			out->sub = sub;
++			break;
++		}
++		al = &g_muse.albums[id];
++		y = zx_album_year(id);
+ 
+ 		out->art = zc_get(c->a, id, &out->aw, &out->ah);
+ 		out->title = al->name;
+@@ -672,7 +856,7 @@ static const zune_list_style *zl_style(const zlist *l)
+ {
+ 	if (zl_albumish(l->kind)) return &ZUNE_ART_ROWS;
+ 	if (l->kind == ZL_TRACKS)
+-		return g_muse.albums[l->album].playlist ? &ZUNE_LIST_ROWS : &ZUNE_TRACK_ROWS;
++		return zx_al_mixed(l->album) ? &ZUNE_LIST_ROWS : &ZUNE_TRACK_ROWS;
+ 	return &ZUNE_TEXT_ROWS;
+ }
+ 
+@@ -702,7 +886,7 @@ static void zx_play_tracks(const int *t, int n, int start, bool shuffle, int alb
+ 		start = 0;
+ 	}
+ 	muse_play(paths, n, start, 0, false, 1.0, "", "");
+-	g_queue_album = album;
++	g_queue_album = album >= 0 && album < g_muse.nalbums ? album : -1;
+ 	free(paths);
+ }
+ 
+@@ -743,7 +927,7 @@ static int zx_id_tracks(zl_kind kind, int id, int *out, int cap)
+ 		if (cap > 0) out[n++] = id;
+ 		break;
+ 	default:
+-		for (i = 0; i < g_muse.albums[id].n && n < cap; i++) out[n++] = g_muse.albums[id].first + i;
++		n = zx_al_tracks(id, out, cap);
+ 		break;
+ 	}
+ 	return n;
+@@ -806,6 +990,28 @@ static void zt_refill(zt_level *lv)
+ 	else zl_fill(&lv->list, zt_child(lv->sib.kind), lv->sib.ids[lv->pos]);
+ }
+ 
++/* A list that shows liked songs - the playlists, or liked songs itself -
++ * filled again when a like has changed them, the cursor kept on what it was
++ * on where that is still there. */
++static void zt_keep_liked(zt_level *lv)
++{
++	zlist *l = &lv->list;
++	int id, cur, rows, i;
++
++	if (l->liked_ver == zx_liked_ver) return;
++	if (l->kind != ZL_PLAYLISTS && !(l->kind == ZL_TRACKS && zx_is_liked(l->album))) {
++		l->liked_ver = zx_liked_ver;
++		return;
++	}
++	id = zl_id(l, l->cursor);
++	cur = l->cursor;
++	zt_refill(lv);
++	rows = zl_rows(l);
++	for (i = 0; id >= 0 && i < rows; i++) if (zl_id(l, i) == id) break;
++	l->cursor = id >= 0 && i < rows ? i : cur < rows ? cur : rows > 0 ? rows - 1 : 0;
++	cf_reset(&l->cf, l->cursor);
++}
++
+ /* The level under `from`'s row `row`. */
+ static bool zt_enter(zt_level *dst, const zlist *from, int row)
+ {
+@@ -880,9 +1086,10 @@ static bool zt_draw(app *a, zt_level *lv, char letter, Uint8 letter_alpha)
+ 			for (k = -1; k < 10 && k < n; k++) {
+ 				int i = ((lv->pos + k) % n + n) % n;
+ 
++				cv[i].heart = zx_is_liked(lv->sib.ids[i]);
+ 				cv[i].art = zc_get(a, lv->sib.ids[i], &cv[i].w, &cv[i].h);
+ 			}
+-			zune_twist_covers(r, cv, n, lv->pos, g_muse.albums[lv->sib.ids[lv->pos]].name, slide);
++			zune_twist_covers(r, cv, n, lv->pos, zx_al_name(lv->sib.ids[lv->pos]), slide);
+ 			free(cv);
+ 		}
+ 	} else {
+@@ -923,8 +1130,8 @@ static int zt_options(app *a, zt_level *lv, const char *what, bool song, int rat
+ 	if (!song) { items[n] = "shuffle"; acts[n++] = ZA_SHUFFLE; }
+ 	items[n] = "add to now playing"; acts[n++] = ZA_ADD;
+ 	if (song) {
+-		items[n] = rating > 0 ? "unrate" : "rate: like"; acts[n++] = ZA_LIKE;
+-		items[n] = rating < 0 ? "unrate" : "rate: dislike"; acts[n++] = ZA_DISLIKE;
++		items[n] = rating > 0 ? "unlike" : "rate: like"; acts[n++] = ZA_LIKE;
++		items[n] = rating < 0 ? "remove dislike" : "rate: dislike"; acts[n++] = ZA_DISLIKE;
+ 	}
+ 	plat_input_flush();
+ 	memset(&a->in, 0, sizeof a->in);
+@@ -976,9 +1183,12 @@ static void zt_browse(app *a, const zl_kind *cats, int ncats, zl_kind start, boo
+ 	while (!want_quit && a->running && depth > 0) {
+ 		zt_level *lv = &st[depth - 1];
+ 		zlist *l = &lv->list;
+-		int rows = zl_rows(l), dir = 0, album, n;
++		int rows, dir = 0, album, n;
+ 		unsigned now_ms = plat_now_ms();
+ 
++		zt_keep_liked(lv);
++		rows = zl_rows(l);
++
+ 		muse_screen_poll();
+ 		if (cover_answers()) dirty = true;
+ 		plat_input_poll(&a->in);
+-- 
+2.43.0
+

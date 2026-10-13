@@ -9,8 +9,8 @@ It reads every song's tags, looks each one up in public music databases,
 and writes to the card:
 
   Music/.zune/library.tsv   what the Pixel 2's Zune theme shows: real titles,
-                            genres, years, lengths (the genres pivot, years
-                            on albums, times on tracks, smart dj)
+                            genres, years, lengths (the genres list, years
+                            on albums, times on tracks)
   Playlists/<name>.m3u8     nine auto playlists, each with a cover:
 
     chill           soft, slow songs - and not slow-jam R&B
@@ -23,6 +23,10 @@ and writes to the card:
     crowd pleaser   songs that reached the Billboard Hot 100 top 50
     heavy rotation  your most played (counted on the Pixel 2, and Last.fm)
     discover        what you play least and the world knows least
+
+  (Playlists/liked songs.m3u8 is the Pixel 2's own - the songs liked there.
+  This script never replaces it; --fix-playlists repoints it like any
+  playlist of yours, which keeps the likes of songs that have moved.)
 
 Where the facts come from (all free, all public):
 

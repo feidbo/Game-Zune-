@@ -64,8 +64,12 @@ the time (see [Sources](#sources)):
   pattern (one per album, always the same one), the way the first Zune did.
 - **The center button on Now Playing** (A, or X) brings up **rate this song**, **song list**
   (what's queued), **shuffle** and **repeat**, like the Zune's.
+- **Liked songs:** press **Y** on Now Playing to like the song you're listening to. A heart
+  appears, "added to liked songs" shows for a moment, and the song goes on the end of a
+  playlist called **liked songs**, first in **playlists**. Press Y again to unlike it and take it
+  off. You can also like any song from its options (X) in a list.
 - **Options anywhere** (X, standing in for holding the center button): **play**, **shuffle**,
-  **add to now playing**, and **like / dislike / unrate** on a song.
+  **add to now playing**, and **like / dislike** on a song.
 - **Ratings:** a heart or a broken heart, like the Zune's. Disliked songs are left out of every
   auto playlist.
 - **Auto playlists** built from public music databases: chill, workout, dark wave, nostalgia,
@@ -93,7 +97,7 @@ play/pause button and **B** its back button.
 | A | Open | Play | Open or play | **Options**: rate, song list, shuffle, repeat |
 | B | Back | Back | Back | Back |
 | X | — | Game details | **Options** | Options |
-| Y | — | Favorite | — | — |
+| Y | — | Favorite | — | **Like** (adds to liked songs) / unlike |
 | START | — | — | Play / pause | Play / pause |
 | SELECT | Music | Music | Close music | Close music |
 | MENU | TortOS menu (UI Theme is in here) | TortOS menu | Music menu (rescan, lock…) | Music menu |
@@ -255,6 +259,13 @@ Things to know:
 - **Re-run it** after adding music or listening for a while, so heavy rotation and discover
   catch up. `--offline` rebuilds from the cache alone, and `--only "chill,party"` makes just those.
 - It only replaces playlists it wrote. A song you **disliked** on the Pixel 2 is in none of them.
+
+**Liked songs** (`Playlists/liked songs.m3u8`) is kept by the Pixel 2, not by this script: the
+songs you liked there (Y on Now Playing), in the order you liked them. It's an ordinary playlist
+file, so your computer and other players can use it too. A song you add to it by hand counts as
+liked the next time the Pixel 2 reads it. To take a song off, unlike it on the device; removing
+the line on your computer isn't enough, because the like itself is kept in
+`Music/.zune/ratings.tsv`.
 
 **Your own playlists** work too. Export an `.m3u` from iTunes/Music, foobar2000, MusicBee or
 VLC into `Playlists/`. Muse finds each song on the card by the `Music/…` part of its path, so
