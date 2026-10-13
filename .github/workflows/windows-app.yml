@@ -6,6 +6,9 @@ name: app
 
 on:
   push:
+    # Both, or GitHub runs it for neither the one left out: a push trigger
+    # that names only tags ignores every branch.
+    branches: ["**"]
     paths:
       - "manager/**"
       - "scripts/**"
