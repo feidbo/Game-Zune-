@@ -1,8 +1,8 @@
-From 9387c98ff53db48e6d5fb954498810f33df1840a Mon Sep 17 00:00:00 2001
+From 5cb738648b03ea89f687228d8b54c3633bd2f2ff Mon Sep 17 00:00:00 2001
 From: Claude <noreply@anthropic.com>
 Date: Mon, 12 Oct 2026 21:01:04 +0000
-Subject: [PATCH] Zune: the original Zune's look, and a top menu of zune and
- game boy
+Subject: [PATCH] Zune: the original Zune's look, and a top menu of zune, game
+ boy and settings
 
 The theme now follows the Zune 30/80/120 - the players with buttons, not
 the touchscreen HD: a main menu of large lowercase words over a
@@ -11,15 +11,16 @@ beneath), shuffle all / play all at the head of every list, the letter
 while scrolling fast, and Now Playing with the art over two thirds of the
 screen and its options on the center button.
 
-The shelf's top level is two words, zune and game boy: zune holds the
-music, game boy the systems and their games.
+The shelf's top level is three words: zune holds the music, game boy
+the systems and their games, and settings - last, as on the Zune - opens
+TortOS's own menu for the whole device.
 ---
  src/controls.c   |   25 +-
- src/main.c       |  402 ++++++++--------
+ src/main.c       |  406 +++++++++--------
  src/zune.c       |  555 +++++++++++-----------
  src/zune.h       |  190 ++++----
- src/zune_music.h | 1141 +++++++++++++++++++++-------------------------
- 5 files changed, 1109 insertions(+), 1204 deletions(-)
+ src/zune_music.h | 1138 +++++++++++++++++++++-------------------------
+ 5 files changed, 1110 insertions(+), 1204 deletions(-)
 
 diff --git a/src/controls.c b/src/controls.c
 index 0a6900d..65c5c92 100644
@@ -70,7 +71,7 @@ index 0a6900d..65c5c92 100644
  	return n;
  }
 diff --git a/src/main.c b/src/main.c
-index fb4d227..5ab74f2 100644
+index fb4d227..7cd74d7 100644
 --- a/src/main.c
 +++ b/src/main.c
 @@ -459,8 +459,8 @@ static void shelf_keys(in_button *back, in_button *fwd, in_button *jup, in_butto
@@ -106,7 +107,7 @@ index fb4d227..5ab74f2 100644
  static void zune_music_shot(app *a, const char *spec);
  static void zx_on_played(const char *path);
  
-@@ -3106,29 +3104,111 @@ furniture:
+@@ -3106,29 +3104,115 @@ furniture:
  
  /* ---------- the Zune theme ----------------------------------------------- *
   *
@@ -115,15 +116,14 @@ index fb4d227..5ab74f2 100644
 - * that runs off the screen, with its sort orders as the pivots. Everything
 - * here gathers what to show; src/zune.c does the drawing. */
 + * The shelf as the original Zune's main menu: very large lowercase words over
-+ * your background picture. The top has two - "zune", for the music, and
-+ * "game boy", for the games. Under "game boy" the systems are words of the
++ * your background picture. The top has three - "zune", for the music,
++ * "game boy", for the games, and "settings", last, as on the Zune; it is
++ * TortOS's own menu, for the whole device. Under "game boy" the systems are words of the
 + * same kind, and a system's games are the twist: the systems across the top,
 + * left and right to change, the games in a list under them. Everything here
 + * gathers what to show; src/zune.c draws it, and the music is
 + * src/zune_music.h. */
- 
--/* What the hub calls a system: Muse is the music, as the Zune said it. */
--static const char *zune_sys_name(const system_cfg *s)
++
 +static int      g_zlevel;          /* 0 the top, 1 the game boy menu */
 +static int      g_ztop;            /* the top's selection */
 +static float    g_zpos;            /* a menu's selection, eased */
@@ -133,53 +133,51 @@ index fb4d227..5ab74f2 100644
 +static char     g_zletter;
 +
 +static int zg_systems(app *a, int *out)
- {
--	if (is_muse(s)) return muse_books_shown() ? "audiobooks" : "music";
--	return s->name;
++{
 +	int i, n = 0;
 +
 +	for (i = 0; i < a->sys.count; i++)
 +		if (!is_muse(&a->sys.systems[i])) out[n++] = i;
 +	return n;
- }
++}
  
--static const char *zune_hub_word(void *ctx, int i)
+-/* What the hub calls a system: Muse is the music, as the Zune said it. */
+-static const char *zune_sys_name(const system_cfg *s)
 +static int zg_index(const int *sys, int n, int s)
  {
--	app *a = ctx;
+-	if (is_muse(s)) return muse_books_shown() ? "audiobooks" : "music";
+-	return s->name;
 +	int i;
 +
 +	for (i = 0; i < n; i++) if (sys[i] == s) return i;
 +	return 0;
-+}
-+
-+/* The top's words: what is on the card. */
-+enum { ZT_TOP_ZUNE, ZT_TOP_GAMES };
+ }
+ 
+-static const char *zune_hub_word(void *ctx, int i)
++/* The top's words: what is on the card, then settings. */
++enum { ZT_TOP_ZUNE, ZT_TOP_GAMES, ZT_TOP_SETTINGS, ZT_TOP_MAX };
 +static int zt_top(app *a, const char **names, int *what)
-+{
+ {
+-	app *a = ctx;
 +	int sys[CFG_MAX_SYSTEMS], n = 0;
 +
 +	if (g_muse.ntracks > 0) { names[n] = "zune"; what[n++] = ZT_TOP_ZUNE; }
 +	if (zg_systems(a, sys) > 0) { names[n] = "game boy"; what[n++] = ZT_TOP_GAMES; }
++	names[n] = "settings"; what[n++] = ZT_TOP_SETTINGS;
 +	return n;
 +}
- 
--	if (i < 0 || i >= a->sys.count) return "";
--	return is_muse(&a->sys.systems[i]) ? "music" : a->sys.systems[i].name;
++
 +static void zg_ease(float sel)
 +{
 +	g_zpos += (sel - g_zpos) * 0.35f;
 +	if (fabsf(sel - g_zpos) < 0.01f) g_zpos = sel;
 +	else redraw_now();
- }
- 
--/* The second line of a game's row. On Favorites it is the system the game is
-- * from; elsewhere the region and dump tags the shelf's title leaves off, since
-- * that is what tells two copies of one game apart. */
++}
++
 +static void zune_draw_top(app *a)
 +{
-+	const char *names[CFG_MAX_SYSTEMS + 2];
-+	int what[2], sys[CFG_MAX_SYSTEMS], n, sel, i;
++	const char *names[CFG_MAX_SYSTEMS + ZT_TOP_MAX];
++	int what[ZT_TOP_MAX], sys[CFG_MAX_SYSTEMS], n, sel, i;
 +
 +	zune_backdrop(a->r, 60);
 +	if (g_zlevel == 0) {
@@ -199,9 +197,11 @@ index fb4d227..5ab74f2 100644
 +/* The shelf's keys in the Zune theme, on the menus. */
 +static void zune_update_top(app *a)
 +{
-+	const char *names[2];
-+	int what[2], sys[CFG_MAX_SYSTEMS], n, cur;
-+
++	const char *names[ZT_TOP_MAX];
++	int what[ZT_TOP_MAX], sys[CFG_MAX_SYSTEMS], n, cur;
+ 
+-	if (i < 0 || i >= a->sys.count) return "";
+-	return is_muse(&a->sys.systems[i]) ? "music" : a->sys.systems[i].name;
 +	if (g_zlevel == 0) {
 +		n = zt_top(a, names, what);
 +		if (n <= 0) return;
@@ -211,6 +211,8 @@ index fb4d227..5ab74f2 100644
 +		if (a->in.pressed[IN_ACCEPT]) {
 +			if (what[g_ztop] == ZT_TOP_ZUNE) {
 +				zune_menu_screen(a);
++			} else if (what[g_ztop] == ZT_TOP_SETTINGS) {
++				tortos_menu(a);
 +			} else {
 +				n = zg_systems(a, sys);
 +				if (is_muse(&a->sys.systems[a->sys_cursor])) a->sys_cursor = sys[0];
@@ -227,13 +229,16 @@ index fb4d227..5ab74f2 100644
 +	if (in_repeat(&a->in, IN_UP))   { a->sys_cursor = sys[(cur + n - 1) % n]; load_ahead(a); }
 +	if (in_repeat(&a->in, IN_DOWN)) { a->sys_cursor = sys[(cur + 1) % n]; load_ahead(a); }
 +	if (a->in.pressed[IN_ACCEPT]) enter_system(a);
-+}
-+
+ }
+ 
+-/* The second line of a game's row. On Favorites it is the system the game is
+- * from; elsewhere the region and dump tags the shelf's title leaves off, since
+- * that is what tells two copies of one game apart. */
 +/* A game's second line: on Favorites its system, else its region. */
  static void zune_game_sub(app *a, const sysview *v, int i, char *out, size_t n)
  {
  	const game_entry *g = &v->list.items[i];
-@@ -3155,7 +3235,6 @@ static bool zune_game_row(void *ctx, int i, zune_row *out)
+@@ -3155,7 +3239,6 @@ static bool zune_game_row(void *ctx, int i, zune_row *out)
  	static char sub[LIB_NAME];
  	app *a = ctx;
  	sysview *v = &a->view[a->sys_cursor];
@@ -241,7 +246,7 @@ index fb4d227..5ab74f2 100644
  	const game_entry *g;
  	float cb;
  
-@@ -3163,108 +3242,34 @@ static bool zune_game_row(void *ctx, int i, zune_row *out)
+@@ -3163,108 +3246,34 @@ static bool zune_game_row(void *ctx, int i, zune_row *out)
  	g = &v->list.items[i];
  	out->art = game_get_tex(a, i, &out->aw, &out->ah, &cb);
  	out->title = g->title;
@@ -365,7 +370,7 @@ index fb4d227..5ab74f2 100644
  	cf_tick(&v->cf, n);
  	if (v->cf.active) redraw_now();
  	{
-@@ -3273,61 +3278,85 @@ static void zune_draw_games(app *a)
+@@ -3273,61 +3282,85 @@ static void zune_draw_games(app *a)
  	}
  	if (!cf_cutting(&v->cf)) evict_far(v, TEX_KEEP_NEAR);
  
@@ -484,7 +489,7 @@ index fb4d227..5ab74f2 100644
  	if (dir_both()) { draw_both(a); return; }
  
  	SDL_Rect focus;
-@@ -8842,17 +8871,40 @@ static muse_exit muse_now_screen(app *a)
+@@ -8842,17 +8875,40 @@ static muse_exit muse_now_screen(app *a)
  		/* A, and only A. X did the same thing here and pausing in the list,
  		 * which made one button mean two things a screen apart; it is left
  		 * free in Muse for something that needs it. Eric's call, 2026-09-19. */
@@ -532,7 +537,7 @@ index fb4d227..5ab74f2 100644
  		/* The mode, on music; on a book, which plays in order whatever the
  		 * mode says, its speed. */
  		if (a->in.pressed[IN_Y]) {
-@@ -8863,6 +8915,7 @@ static muse_exit muse_now_screen(app *a)
+@@ -8863,6 +8919,7 @@ static muse_exit muse_now_screen(app *a)
  		if (in_repeat(&a->in, IN_R1))       musec_next();
  		if (in_repeat(&a->in, IN_LEFT))     musec_seek_by(-seek_step(&a->in, IN_LEFT));
  		if (in_repeat(&a->in, IN_RIGHT))    musec_seek_by(+seek_step(&a->in, IN_RIGHT));
@@ -540,7 +545,7 @@ index fb4d227..5ab74f2 100644
  		if (muse_keys(a)) {
  			muse_locked(a);
  			if (!a->running || g_muse_gone) { how = MUSE_CLOSE; break; }
-@@ -10581,24 +10634,8 @@ static void update_systems(app *a)
+@@ -10581,24 +10638,8 @@ static void update_systems(app *a)
  	int dir = 0;
  
  	shelf_keys(&back, &fwd, &jup, &jdn);
@@ -567,7 +572,7 @@ index fb4d227..5ab74f2 100644
  
  	if (in_repeat(&a->in, back)) { a->sys_cursor = (a->sys_cursor - 1 + n) % n; dir = -1; }
  	if (in_repeat(&a->in, fwd))  { a->sys_cursor = (a->sys_cursor + 1) % n; dir = +1; }
-@@ -10702,23 +10739,19 @@ static void update_games(app *a)
+@@ -10702,23 +10743,19 @@ static void update_games(app *a)
  	int dir = 0;
  
  	shelf_keys(&back, &fwd, &jup, &jdn);
@@ -596,7 +601,7 @@ index fb4d227..5ab74f2 100644
  	/* HERE, AND NOT AT THE END OF THE PASS, because four of the handlers below
  	 * return without reaching the end.
  	 *
-@@ -11573,6 +11606,7 @@ static const char *shot_theme;
+@@ -11573,6 +11610,7 @@ static const char *shot_theme;
  static int shot_sys = -1;
  static int shot_sort = -1;          /* --sort K: the focused shelf in order K */
  static const char *shot_zmusic;     /* --zmusic SPEC: the Zune theme's music; see zune_music_shot */
@@ -604,7 +609,7 @@ index fb4d227..5ab74f2 100644
  /* --nowplaying ALBUM [TRACK [SECONDS]], and --paused with it. */
  static int   shot_np = -1, shot_np_track, shot_np_paused;
  static float shot_np_at = 83.0f;
-@@ -11921,6 +11955,7 @@ int main(int argc, char *argv[])
+@@ -11921,6 +11959,7 @@ int main(int argc, char *argv[])
  		else if (!strcmp(argv[i], "--sys") && i + 1 < argc) shot_sys = atoi(argv[++i]);
  		else if (!strcmp(argv[i], "--sort") && i + 1 < argc) shot_sort = atoi(argv[++i]);
  		else if (!strcmp(argv[i], "--zmusic") && i + 1 < argc) shot_zmusic = argv[++i];
@@ -612,7 +617,7 @@ index fb4d227..5ab74f2 100644
  		else if (!strcmp(argv[i], "--controls")) {
  			shot_controls = 0;
  			if (i + 1 < argc && argv[i + 1][0] >= '0' && argv[i + 1][0] <= '9')
-@@ -12445,6 +12480,11 @@ int main(int argc, char *argv[])
+@@ -12445,6 +12484,11 @@ int main(int argc, char *argv[])
  			a.sys_cursor = shot_sys;
  			cf_reset(&a.cf_sys, shot_sys);
  		}
@@ -1607,7 +1612,7 @@ index bf09af0..057cff6 100644
  
  /* Returns how long until the picture would change by itself, in ms. */
 diff --git a/src/zune_music.h b/src/zune_music.h
-index 73b58d6..f431636 100644
+index 73b58d6..149601b 100644
 --- a/src/zune_music.h
 +++ b/src/zune_music.h
 @@ -1,5 +1,5 @@
@@ -1626,7 +1631,7 @@ index 73b58d6..f431636 100644
 - *     genre     albums  songs
 - *     album / playlist: the cover, and its tracks
 - *   now playing, its list, ratings, smart dj; quickplay on the hub
-+ *   zune       now playing / music / audiobooks / settings
++ *   zune       now playing / music / audiobooks  (settings is on the top menu)
 + *   music      artists  albums  songs  genres  playlists     (the twist)
 + *     artist     the other artists across the top; their albums below
 + *     album      the other albums across the top, as tiny covers; its songs
@@ -2720,7 +2725,7 @@ index 73b58d6..f431636 100644
  			}
  			plat_input_flush();
  			memset(&a->in, 0, sizeof a->in);
-@@ -1257,27 +1103,141 @@ static void zune_music_from(app *a, bool now, int album_page)
+@@ -1257,27 +1103,138 @@ static void zune_music_from(app *a, bool now, int album_page)
  			continue;
  		}
  
@@ -2769,7 +2774,7 @@ index 73b58d6..f431636 100644
 +}
 +
 +/* The words the zune menu offers right now. */
-+enum { ZM_NOW, ZM_MUSIC, ZM_BOOKS, ZM_SETTINGS };
++enum { ZM_NOW, ZM_MUSIC, ZM_BOOKS };
 +static int zm_items(const char **names, int *what)
 +{
 +	int n = 0;
@@ -2777,7 +2782,6 @@ index 73b58d6..f431636 100644
 +	if (zx_loaded()) { names[n] = "now playing"; what[n++] = ZM_NOW; }
 +	names[n] = "music"; what[n++] = ZM_MUSIC;
 +	if (ml_count(&g_muse, true) > 0) { names[n] = "audiobooks"; what[n++] = ZM_BOOKS; }
-+	names[n] = "settings"; what[n++] = ZM_SETTINGS;
 +	return n;
 +}
 +
@@ -2835,12 +2839,10 @@ index 73b58d6..f431636 100644
 +				zune_music(a, true);
 +			} else if (w == ZM_MUSIC) {
 +				zune_music(a, false);
-+			} else if (w == ZM_BOOKS) {
++			} else {
 +				static const zl_kind books[] = { ZL_BOOKS };
 +
 +				zt_browse(a, books, 1, ZL_BOOKS, false);
-+			} else {
-+				tortos_menu(a);
 +			}
 +			g_menu_closing = false;
 +			plat_input_flush();
@@ -2869,7 +2871,7 @@ index 73b58d6..f431636 100644
  static bool zq_get(void *ctx, int i, zune_row *out)
  {
  	static char sub[256];
-@@ -1287,9 +1247,7 @@ static bool zq_get(void *ctx, int i, zune_row *out)
+@@ -1287,9 +1244,7 @@ static bool zq_get(void *ctx, int i, zune_row *out)
  	(void)ctx;
  	if (!t) return false;
  	zx_ensure();
@@ -2880,7 +2882,7 @@ index 73b58d6..f431636 100644
  		out->title = zx_title(r);
  		snprintf(sub, sizeof sub, "%s", zx_track_artist(r));
  		out->sub = sub;
-@@ -1300,10 +1258,13 @@ static bool zq_get(void *ctx, int i, zune_row *out)
+@@ -1300,10 +1255,13 @@ static bool zq_get(void *ctx, int i, zune_row *out)
  	return true;
  }
  
@@ -2894,7 +2896,7 @@ index 73b58d6..f431636 100644
  
  	if (n <= 0) return;
  	cf_reset(&cf, cur);
-@@ -1321,17 +1282,10 @@ static void zune_queue_screen(app *a)
+@@ -1321,17 +1279,10 @@ static void zune_queue_screen(app *a)
  		cf_set_cursor_dir(&cf, cur, n, dir);
  		if (a->in.pressed[IN_ACCEPT]) { musec_jump(cur); return; }
  		cf_tick(&cf, n);
@@ -2916,7 +2918,7 @@ index 73b58d6..f431636 100644
  		zune_clock(a->r);
  		plat_draw_osd(a->r);
  		plat_present();
-@@ -1339,17 +1293,6 @@ static void zune_queue_screen(app *a)
+@@ -1339,17 +1290,6 @@ static void zune_queue_screen(app *a)
  	}
  }
  
@@ -2934,7 +2936,7 @@ index 73b58d6..f431636 100644
  static int zx_rating_now(void)
  {
  	const char *t = musec_track(musec_now()->index);
-@@ -1359,140 +1302,110 @@ static int zx_rating_now(void)
+@@ -1359,140 +1299,110 @@ static int zx_rating_now(void)
  	return zx_rate[r];
  }
  

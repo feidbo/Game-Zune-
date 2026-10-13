@@ -27,16 +27,18 @@ card has no real cover art, so the albums show the Zune's colorful stand-in patt
 
 ## What you get
 
-### The top menu: **zune** or **game boy**
+### The top menu: **zune**, **game boy**, **settings**
 
-Turn it on and there are two words, in the Zune's very large lowercase type over a background
-picture: **zune** and **game boy**.
+Turn it on and there are three words, in the Zune's very large lowercase type over a background
+picture: **zune**, **game boy** and **settings**.
 
-- **zune** is everything music: **music** (and **now playing** while something plays), plus
-  **settings**.
+- **zune** is everything music: **music** (and **now playing** while something plays).
 - **game boy** is the games: **game boy**, **game boy color** and **game boy advance**.
+- **settings** is last, as it was on the Zune's main menu. It is TortOS's own menu for the
+  whole device: brightness, sleep, the UI theme, saves and emulator options. **MENU** also
+  opens it from any screen.
 
-B always goes back a level, all the way to these two words.
+B always goes back a level, all the way to these three words.
 
 ### The original Zune's way of getting around
 
