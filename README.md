@@ -32,8 +32,12 @@ card has no real cover art, so the albums show the Zune's colorful stand-in patt
 Turn it on and there are three words, in the Zune's very large lowercase type over a background
 picture: **zune**, **game boy** and **settings**.
 
-- **zune** is everything music: **music** (and **now playing** while something plays).
-- **game boy** is the games: **game boy**, **game boy color** and **game boy advance**.
+- **zune** is the music: **artists**, **albums**, **songs**, **playlists** and **genres**
+  (with **now playing** on top while something plays, and **audiobooks** if you have any).
+  Each opens the twist at that category. Back out and the menu is still on the word you
+  picked, and next time you open zune it starts there.
+- **game boy** is the games: **game boy**, **game boy color** and **game boy advance**, each
+  opening the twist of its games.
 - **settings** is last, as it was on the Zune's main menu. It is TortOS's own menu for the
   whole device: brightness, sleep, the UI theme, saves and emulator options. **MENU** also
   opens it from any screen.
@@ -48,7 +52,7 @@ the time (see [Sources](#sources)):
 - **The twist.** Choose something and its sub-menus run across the top of the screen, the
   current one bright and the rest fading off to the right; the list sits beneath.
   **Left/Right** moves along that row, **Up/Down** through the list. In music the row is
-  **artists · albums · songs · playlists · genres** (audiobooks too, if you have any); in games
+  **artists · albums · songs · playlists · genres**; in games
   it is the three Game Boys, so Left/Right flips between systems.
 - **Inside an album, the other albums are the top row**, as tiny covers. Left/Right goes to the
   album next door without going back.
