@@ -74,6 +74,9 @@ the time (see [Sources](#sources)):
   nothing gets bumped in a pocket. The music keeps playing and headset buttons still work.
   **MENU** wakes it; if MENU was only bumped and nothing else is pressed, it locks itself again
   after 10 seconds. If the music stops, Auto Off still turns the Pixel 2 off to save the battery.
+- **Battery:** every Zune screen (the top menu, the zune and game boy menus, lists, Now Playing,
+  settings) shows the battery beside the clock, top right. It empties as it runs down, turns
+  **red at 10%** and below, and shows a **lightning bolt** while charging.
 - **Only what you have:** the zune menu shows playlists only when there are some, genres only
   once `update` has given the songs genres, and audiobooks only when there are any.
 - **Music while you play:** in a game, **MENU → Sound** switches between the game's own sound
@@ -385,7 +388,8 @@ Two patches, in `tortos-zune/patches/`, each building and passing TortOS's check
 2. **The Zune theme**:
    - `src/zune.c`, `src/zune.h` (new): the drawing - the menu words over the background picture,
      the twist row (words or tiny covers), lists with "shuffle all" / "play all", the fast-scroll
-     letter, the options menu, hearts, the no-art pattern and Now Playing. Fonts and the
+     letter, the options menu, hearts, the no-art pattern, Now Playing, and the clock with the
+     battery beside it. Fonts and the
      background are opened only when the theme first draws.
    - `src/zune_music.h` (new, included into `main.c`): the music - the zune menu, the twist
      browser, Now Playing's options and song list, liked songs, and reading `library.tsv` and
@@ -396,6 +400,7 @@ Two patches, in `tortos-zune/patches/`, each building and passing TortOS's check
      screenshot harness.
    - `src/ui.*`: switching the menus' typeface at runtime, and flat panels.
    - `src/cards.h`: *Zune* as a third UI Theme, and the default.
+   - `src/device/*.c`: `TORTOS_FAKE_BATT=40c` fakes a charging battery for screenshots.
    - `src/game_menu.*`, `tools/menu-check.c`: the in-game menu's **Sound** row (game / music).
    - `src/controls.*`, `tools/controls-check.c`: the theme's Controls pages.
    - `src/device/brick.c`: the rest of the pad on the desktop build's keyboard, for driving it in
