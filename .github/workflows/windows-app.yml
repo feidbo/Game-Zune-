@@ -1,0 +1,82 @@
+# GameZune.exe, the card manager for Windows (manager/), built and tested on
+# every change to it - and to what it carries: the Zune launcher (dist/TortOS)
+# and scripts/zunesync.py. The exe is this run's artifact; a tag app-v*
+# also puts it on a GitHub release.
+name: app
+
+on:
+  push:
+    paths:
+      - "manager/**"
+      - "scripts/**"
+      - "dist/TortOS/**"
+      - ".github/workflows/windows-app.yml"
+    tags: ["app-v*"]
+  pull_request:
+    paths:
+      - "manager/**"
+      - "scripts/**"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install
+        run: |
+          sudo apt-get update -q && sudo apt-get install -y -q ffmpeg
+          python -m pip install -r manager/requirements.txt -r scripts/requirements.txt
+      - name: The card manager's tests
+        run: python -m unittest discover -s manager/tests -v
+      - name: zunesync's tests
+        run: python -m unittest discover -s scripts/tests -v
+
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install
+        run: python -m pip install -r manager/requirements.txt pyinstaller==6.10.0
+      - name: Tests, on Windows paths
+        run: python -m unittest discover -s manager/tests -v
+      - name: Build GameZune.exe
+        run: python manager/build.py
+      - name: Check it carries what it needs
+        shell: python
+        run: |
+          from PyInstaller.archive.readers import CArchiveReader
+          a = CArchiveReader("build-app/dist/GameZune.exe")
+          pyz = a.open_embedded_archive([n for n in a.toc if n.endswith(".pyz")][0])
+          need = ["TortOS/tortos.elf", "TortOS/zune-wallpaper.jpg", "gamezune.ico"]
+          missing = [n for n in need if n not in a.toc] + [m for m in ("zunesync", "mutagen", "gamezune.app") if m not in pyz.toc]
+          assert not missing, missing
+          print("ok:", len(a.toc), "files")
+      - uses: actions/upload-artifact@v4
+        with:
+          name: GameZune-windows
+          path: build-app/dist/GameZune.exe
+          if-no-files-found: error
+
+  release:
+    if: startsWith(github.ref, 'refs/tags/app-v')
+    needs: [tests, windows]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: GameZune-windows
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: GameZune.exe

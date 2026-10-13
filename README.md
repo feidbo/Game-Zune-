@@ -68,6 +68,18 @@ the time (see [Sources](#sources)):
   appears, "added to liked songs" shows for a moment, and the song goes on the end of a
   playlist called **liked songs**, first in **playlists**. Press Y again to unlike it and take it
   off. You can also like any song from its options (X) in a list.
+- **Pocket lock:** hold **START** for a second on Now Playing (or choose **lock screen** in its
+  options). "locked - press menu to wake" shows for a moment, then the screen goes dark and
+  **every button is ignored except MENU** - the d-pad, A/B/X/Y, START, volume, even power - so
+  nothing gets bumped in a pocket. The music keeps playing and headset buttons still work.
+  **MENU** wakes it; if MENU was only bumped and nothing else is pressed, it locks itself again
+  after 10 seconds. If the music stops, Auto Off still turns the Pixel 2 off to save the battery.
+- **Only what you have:** the zune menu shows playlists only when there are some, genres only
+  once `update` has given the songs genres, and audiobooks only when there are any.
+- **Music while you play:** in a game, **MENU → Sound** switches between the game's own sound
+  and your music. On **zune music** the game goes quiet and the music plays over it (if nothing
+  was playing, the whole library starts, shuffled); back on **game**, the music pauses and the
+  game's sound returns.
 - **Options anywhere** (X, standing in for holding the center button): **play**, **shuffle**,
   **add to now playing**, and **like / dislike** on a song.
 - **Ratings:** a heart or a broken heart, like the Zune's. Disliked songs are left out of every
@@ -98,9 +110,9 @@ play/pause button and **B** its back button.
 | B | Back | Back | Back | Back |
 | X | — | Game details | **Options** | Options |
 | Y | — | Favorite | — | **Like** (adds to liked songs) / unlike |
-| START | — | — | Play / pause | Play / pause |
+| START | — | — | Play / pause | Play / pause (**hold: pocket lock**) |
 | SELECT | Music | Music | Close music | Close music |
-| MENU | TortOS menu (UI Theme is in here) | TortOS menu | Music menu (rescan, lock…) | Music menu |
+| MENU | TortOS menu (UI Theme is in here) | TortOS menu (**Sound: game / zune music**) | Music menu (rescan, lock…) | Music menu; **wakes the pocket lock** |
 
 ---
 
@@ -122,6 +134,9 @@ music player beside it, so the versions must match. The install script checks th
 
 The ready-built files are in [`dist/TortOS/`](dist/TortOS): the launcher (`tortos.elf`), its fonts and its background picture (`zune-wallpaper.jpg`).
 
+**Windows:** the [Game Zune app](#the-game-zune-app-for-windows) does it: **device → install /
+update the zune theme**.
+
 **macOS / Linux:**
 
 ```sh
@@ -129,7 +144,7 @@ scripts/install-to-card.sh /Volumes/TORTOS        # macOS
 scripts/install-to-card.sh /media/$USER/TORTOS    # Linux
 ```
 
-**Windows (or by hand):**
+**By hand:**
 
 1. On the card, rename `TortOS\tortos.elf` to `tortos.elf.stock`. This is your way back.
 2. Copy everything in this repo's `dist\TortOS\` into the card's `TortOS\` folder,
@@ -141,7 +156,10 @@ there if you want TortOS's own look back.
 
 ### 3. Load your games and music
 
-There are two ways onto the card. Use whichever is handier:
+There are three ways onto the card. Use whichever is handier:
+
+- **The Game Zune app** (Windows, or anywhere with Python): see
+  [below](#the-game-zune-app-for-windows). It files everything in the right place for you.
 
 - **Card reader:** power the Pixel 2 off, put the microSD in your computer, and copy into
   the `TORTOS` drive. This is the fastest way for a big first load.
@@ -277,6 +295,36 @@ picture as `Playlists/.media/<playlist name>.jpg`. Otherwise it uses its first s
 
 ---
 
+## The Game Zune app for Windows
+
+A program for your computer that looks after the card, in the Zune software's style. Put the
+SD card in your computer and start it; it finds the card by itself.
+
+| music | playlists | games | device |
+|---|---|---|---|
+| ![music](docs/screenshots/app-music.png) | ![playlists](docs/screenshots/app-playlists.png) | ![games](docs/screenshots/app-games.png) | ![device](docs/screenshots/app-device.png) |
+
+| | |
+|---|---|
+| **music** | Browse by artist and album, search, **add songs** or **add a folder** (each song is filed as `Music/<artist>/<album>/<NN - title>` from its tags, with the album's cover saved beside it), **delete**, and **add to playlist**. |
+| **playlists** | **new**, **rename**, **copy**, **delete**; **add songs** (searchable), **remove**, **move up / down**, **save**. **liked songs** is editable here too - it *is* your likes. The auto playlists are read-only (update rebuilds them), so **copy** one to change it. |
+| **games** | Game Boy, Game Boy Color and Game Boy Advance: **add games** (each goes to its system's folder, zips included), **delete**, and **get missing box art** from the [libretro-thumbnails](https://github.com/libretro-thumbnails) project - the Pixel 2 has no Wi-Fi to fetch it itself. |
+| **device** | **install / update the zune theme**, **restore the stock launcher** (with the same safety checks as the install script), **update library and auto playlists** (`zunesync`, with your Last.fm key if you have one), and **eject the card**. |
+
+**Getting it:** each change to the app is built into `GameZune.exe` by this repo's GitHub
+Actions (**Actions → app → the latest run → Artifacts → GameZune-windows**). Pushing a tag
+`app-v1.0` also attaches the exe to a GitHub Release. It's one file and needs no install; Windows
+SmartScreen may warn the first time because it isn't code-signed (**More info → Run anyway**).
+
+**Or run it from source** (Windows, macOS or Linux, Python 3.10+):
+
+```sh
+pip install -r manager/requirements.txt
+python manager/GameZune.pyw
+```
+
+`python manager/build.py` builds the single-file app yourself.
+
 ## If something goes wrong
 
 The launcher is one file on the card, so recovery is easy:
@@ -343,11 +391,12 @@ Two patches, in `tortos-zune/patches/`, each building and passing TortOS's check
      browser, Now Playing's options and song list, liked songs, and reading `library.tsv` and
      `ratings.tsv`.
    - `src/main.c`: the top menu (**zune** / **game boy** / **settings**), the game boy menu, the
-     games list as a twist across the systems, Now Playing's Zune keys, keeping the shelf in step
-     when the theme changes, and `--theme`, `--sys`, `--sort`, `--zmusic` and `--zlevel` for the
+     games list as a twist across the systems, Now Playing's Zune keys, the pocket lock (only
+     MENU wakes it), keeping the shelf in step when the theme changes, and `--theme`, `--sys`, `--sort`, `--zmusic` and `--zlevel` for the
      screenshot harness.
    - `src/ui.*`: switching the menus' typeface at runtime, and flat panels.
    - `src/cards.h`: *Zune* as a third UI Theme, and the default.
+   - `src/game_menu.*`, `tools/menu-check.c`: the in-game menu's **Sound** row (game / music).
    - `src/controls.*`, `tools/controls-check.c`: the theme's Controls pages.
    - `src/device/brick.c`: the rest of the pad on the desktop build's keyboard, for driving it in
      tests.

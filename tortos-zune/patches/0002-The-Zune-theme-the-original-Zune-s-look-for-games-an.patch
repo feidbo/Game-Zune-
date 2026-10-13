@@ -1,8 +1,7 @@
-From b0a1292b12843b9d6cad895da5a6a6abf0708a3a Mon Sep 17 00:00:00 2001
+From 2de4650905233bc2f3310f55fdf652bf9ce716f2 Mon Sep 17 00:00:00 2001
 From: Claude <noreply@anthropic.com>
-Date: Tue, 13 Oct 2026 08:11:55 +0000
-Subject: [PATCH 2/2] The Zune theme: the original Zune's look, for games and
- music
+Date: Tue, 13 Oct 2026 20:31:25 +0000
+Subject: [PATCH] The Zune theme: the original Zune's look, for games and music
 
 A third UI Theme, and the default: TortOS drawn as the original Zune -
 the Zune 30, 80 and 120, the players with buttons - drew itself.
@@ -19,6 +18,15 @@ the Zune 30, 80 and 120, the players with buttons - drew itself.
   the center button for rate, song list, shuffle and repeat; START play
   and pause; the pad to skip, held to scan, and for the volume; Y likes
   the song. A book keeps Muse's own screen and keys.
+- The pocket lock: START held on Now Playing, or its "lock screen". The
+  screen goes dark and every button is ignored - volume and power too -
+  but MENU, which wakes it; a wake with nothing pressed after it locks
+  again ten seconds later. The music plays on; Auto Off still ends it.
+- The zune menu offers only what has something in it: no playlists
+  without any, no genres without the library index.
+- In a game, the in-game menu's Sound row switches what is heard: the
+  game, or the music (ADR-0032 quiets the game while the music plays).
+  Music with nothing loaded starts the whole library shuffled.
 - Liked songs: a like puts the song on Playlists/liked songs.m3u8, an
   ordinary playlist kept in the order liked and shown first among the
   playlists - from memory, so at once. The playlist is the record of
@@ -36,14 +44,17 @@ the theme's Controls pages.
  src/controls.c         |   28 +-
  src/controls.h         |    5 +-
  src/device/brick.c     |    8 +
- src/main.c             |  660 ++++++++++++--
+ src/game_menu.c        |    3 +-
+ src/game_menu.h        |    4 +-
+ src/main.c             |  752 ++++++++++++++--
  src/ui.c               |   52 ++
  src/ui.h               |    6 +
  src/zune.c             |  671 ++++++++++++++
- src/zune.h             |  157 ++++
- src/zune_music.h       | 1882 ++++++++++++++++++++++++++++++++++++++++
+ src/zune.h             |  158 ++++
+ src/zune_music.h       | 1901 ++++++++++++++++++++++++++++++++++++++++
  tools/controls-check.c |    8 +-
- 11 files changed, 3414 insertions(+), 76 deletions(-)
+ tools/menu-check.c     |    5 +-
+ 14 files changed, 3529 insertions(+), 85 deletions(-)
  create mode 100644 src/zune.c
  create mode 100644 src/zune.h
  create mode 100644 src/zune_music.h
@@ -77,7 +88,7 @@ index e1b61bd..ecf01b8 100644
  
  /* The set a stored name selects, by index. An unknown name is the default
 diff --git a/src/controls.c b/src/controls.c
-index 336c022..964453c 100644
+index 336c022..53f8175 100644
 --- a/src/controls.c
 +++ b/src/controls.c
 @@ -47,6 +47,13 @@ static int moving(ctl_dir dir, menu_row *out)
@@ -108,12 +119,12 @@ index 336c022..964453c 100644
 +
 +	/* The original Zune's: the pad twists and skips, the center button
 +	 * opens and - on Now Playing - holds the options, play/pause is its own
-+	 * button. */
++	 * button, held for the pocket lock, which only MENU wakes. */
 +	out[n++] = (menu_row){ "Left/Right", "Twist; skip or scan", false };
 +	out[n++] = (menu_row){ "X",          "Options",         false };
-+	out[n++] = (menu_row){ "START",      "Play or pause",   false };
++	out[n++] = (menu_row){ "START",      "Play/pause; held: lock", false };
 +	out[n++] = (menu_row){ "Y",          "Like: to liked songs", false };
-+	out[n++] = (menu_row){ fn_volume ? "FN+both Vol" : "F1+F2", "Lock, held", false };
++	out[n++] = (menu_row){ "MENU",       "Wake, when locked", false };
 +	return n;
 +}
 +
@@ -164,8 +175,48 @@ index 752b2e1..7d02d06 100644
  	default: return IN_NONE;
  	}
  }
+diff --git a/src/game_menu.c b/src/game_menu.c
+index c5f1a93..60fed81 100644
+--- a/src/game_menu.c
++++ b/src/game_menu.c
+@@ -89,12 +89,13 @@ int gi_rows(menu_row *out, const game_info *gi, bool net)
+ int gm_rows(const gm_ui *u, menu_row *out, gm_bufs *b)
+ {
+ 	static const char *label[GM_ROWS] = {
+-		"Continue", "Save", "Load", "Display", "Cheevos", "Reset", "Quit"
++		"Continue", "Save", "Load", "Display", "Sound", "Cheevos", "Reset", "Quit"
+ 	};
+ 	int i;
+ 
+ 	for (i = 0; i < GM_ROWS; i++) out[i] = (menu_row){ label[i], NULL, true };
+ 	out[GM_DISPLAY].value = u->dmode;
++	out[GM_SOUND].value = u->sound;
+ 
+ 	/* Most of a library has no set, and a row that says so plainly is better
+ 	 * than one that is missing: "none" answers the question the player opened
+diff --git a/src/game_menu.h b/src/game_menu.h
+index 6190116..1a1ece1 100644
+--- a/src/game_menu.h
++++ b/src/game_menu.h
+@@ -101,13 +101,15 @@ int gi_rows(menu_row *out, const game_info *gi, bool net);
+ /* ---------- the in-game menu ---------------------------------------------- */
+ 
+ typedef enum {
+-	GM_CONTINUE, GM_SAVE, GM_LOAD, GM_DISPLAY, GM_CHEEVOS, GM_RESET, GM_QUIT,
++	GM_CONTINUE, GM_SAVE, GM_LOAD, GM_DISPLAY, GM_SOUND, GM_CHEEVOS, GM_RESET, GM_QUIT,
+ 	GM_ROWS
+ } gm_row;
+ 
+ /* What the in-game menu needs to know, gathered by the caller. */
+ typedef struct {
+ 	const char *dmode;    /* the display mode's label */
++	const char *sound;    /* what is heard: the game, or the music (ADR-0032
++	                         quiets the game while the music plays) */
+ 	int         earned;
+ 	int         total;    /* 0: this game has no achievement set */
+ } gm_ui;
 diff --git a/src/main.c b/src/main.c
-index 6ae0cad..485972d 100644
+index 6ae0cad..16ccbef 100644
 --- a/src/main.c
 +++ b/src/main.c
 @@ -51,6 +51,7 @@
@@ -811,7 +862,15 @@ index 6ae0cad..485972d 100644
  			free_all_textures(a);
  			prime_sys_window(a);
  			db_set_str(db_dev(), "cards", CARD_SETS[g_cards].id);
-@@ -8259,6 +8654,7 @@ static unsigned np_draw(app *a, const mu_now *mn, const char *next)
+@@ -7673,6 +8068,7 @@ static int gm_build(app *a, menu_row *out, gm_bufs *b)
+ 	gm_ui u;
+ 
+ 	u.dmode  = DMODES[a->view[a->sys_cursor].dmode].label;
++	u.sound  = musec_playing() ? (zune_ui() ? "zune music" : "music") : "game";
+ 	u.earned = chv_earned();
+ 	u.total  = chv_count();
+ 	return gm_rows(&u, out, b);
+@@ -8259,6 +8655,7 @@ static unsigned np_draw(app *a, const mu_now *mn, const char *next)
  	/* A book played to its end says so, rather than that it stopped. */
  	if (mn->state == MU_STOPPED && book >= 0 && g_book_done && g_book_done[book])
  		state = "Finished";
@@ -819,7 +878,99 @@ index 6ae0cad..485972d 100644
  
  	SDL_SetRenderDrawColor(r, UI_BG_R, UI_BG_G, UI_BG_B, 255);
  	SDL_RenderClear(r);
-@@ -8510,6 +8906,10 @@ static muse_exit muse_now_screen(app *a)
+@@ -8420,13 +8817,52 @@ static bool lock_allowed(void)
+ 	return musec_playing() && !g_muse_over;
+ }
+ 
++/* The Zune theme's pocket lock is stricter, for a player carried in a
++ * pocket: START held on Now Playing, or its options' "lock screen", and then
++ * every button is ignored - volume and power too - but MENU, which wakes it.
++ * A wake that no other button follows within ZUNE_RELOCK_MS locks again, so
++ * MENU bumped in a pocket lights the screen for moments, not hours. Auto Off
++ * still turns the player off once the music has stopped. */
++#define ZUNE_RELOCK_MS 10000
++static unsigned g_relock_at;             /* after a MENU wake; 0 when none */
++
++/* The relock after a wake: true when it is due, the screen untouched. */
++static bool zune_relock_due(const in_state *in)
++{
++	int b;
++
++	if (!zune_ui() || !g_relock_at) return false;
++	for (b = 0; b < IN_COUNT; b++)
++		if (in->pressed[b] || in->down[b]) { g_relock_at = 0; return false; }
++	if ((int)(plat_now_ms() - g_relock_at) < 0) return false;
++	g_relock_at = 0;
++	return lock_allowed();
++}
++
++/* What the screen says for a moment before it goes dark. */
++static void zune_lock_note(app *a)
++{
++	TTF_Font *big = zune_font(ZF_ROW), *small = zune_font(ZF_SUB);
++	int y = TORTOS_SCREEN_H / 2 - 60;
++
++	zune_clear(a->r);
++	zune_text(a->r, big, "locked", TORTOS_SCREEN_W / 2, y, 0, ZUNE_WHITE);
++	zune_text(a->r, small, "press menu to wake", TORTOS_SCREEN_W / 2,
++	          y + (big ? TTF_FontLineSkip(big) : 56) + 10, 0, ZUNE_GRAY);
++	plat_present();
++	SDL_Delay(900);
++}
++
+ /* The volume and brightness keys on a Muse screen, and the chord. F1 and F2
+  * are brightness, so pressing both nudges one down and one up, which cancels;
+- * once both are held they stop repeating. True when the chord locked. */
++ * once both are held they stop repeating. True when the screen should lock:
++ * the chord, or the Zune theme's relock after a wake. */
+ static bool muse_keys(app *a)
+ {
+ 	in_state *in = &a->in;
+ 
++	if (zune_relock_due(in)) return true;
++
+ 	if (in_repeat(in, IN_VOLUP)) plat_volume_nudge(+1);
+ 	if (in_repeat(in, IN_VOLDN)) plat_volume_nudge(-1);
+ 	if (in->down[IN_BRIGHTUP] && in->down[IN_BRIGHTDN]) {
+@@ -8440,11 +8876,15 @@ static bool muse_keys(app *a)
+ 	return false;
+ }
+ 
+-/* Locked, until F1+F2 again, power, or Auto Off. Nothing is drawn: the panel
+- * is dark and a present would be work for nobody. */
++/* Locked, until F1+F2 again, power, or Auto Off - in the Zune theme, until
++ * MENU, or Auto Off. Nothing is drawn: the panel is dark and a present would
++ * be work for nobody. */
+ static void muse_locked(app *a)
+ {
++	bool pocket = zune_ui();
++
+ 	fprintf(stderr, "muse: locked\n");
++	if (pocket) zune_lock_note(a);
+ 	plat_backlight(false);
+ 	plat_input_flush();
+ 	memset(&a->in, 0, sizeof a->in);
+@@ -8452,6 +8892,19 @@ static void muse_locked(app *a)
+ 		muse_screen_poll();
+ 		plat_input_poll(&a->in);
+ 		if (a->in.quit_requested) { a->running = false; break; }
++		if (pocket) {
++			if (idle_due(a)) {
++				plat_backlight(true);
++				muse_power(a);
++				break;
++			}
++			if (a->in.pressed[IN_MENU]) {
++				g_relock_at = plat_now_ms() + ZUNE_RELOCK_MS;
++				break;
++			}
++			SDL_Delay(30);
++			continue;
++		}
+ 		/* Power, or Auto Off once the music has stopped long enough. The
+ 		 * light first, so the power-off animation is seen. */
+ 		if (a->in.pressed[IN_POWER] || idle_due(a)) {
+@@ -8510,6 +8963,11 @@ static muse_exit muse_now_screen(app *a)
  	} shown, drawn;
  	unsigned due = 0;
  	muse_exit how = MUSE_BACK;
@@ -827,10 +978,20 @@ index 6ae0cad..485972d 100644
 +	 * enough to be scanning rather than a tap. This visit's only, and put
 +	 * down after anything that took the keys away (see zune_pad_tap). */
 +	bool was[2] = { false, false }, scanned[2] = { false, false };
++	bool start_was = false, start_held = false;   /* START: tap plays, held locks */
  
  	mq_reset(MQ_NP);
  	memset(&drawn, 0, sizeof drawn);
-@@ -8536,9 +8936,49 @@ static muse_exit muse_now_screen(app *a)
+@@ -8521,7 +8979,7 @@ static muse_exit muse_now_screen(app *a)
+ 		const char *nt;
+ 		char next[128] = "";
+ 		unsigned now;
+-		bool touched = false;
++		bool touched = false, lock_now = false;
+ 		int b;
+ 
+ 		muse_screen_poll();
+@@ -8536,9 +8994,59 @@ static muse_exit muse_now_screen(app *a)
  			how = muse_menu(a);
  			if (how != MUSE_BACK) break;
  			memset(&drawn, 0, sizeof drawn);     /* the menu drew over it */
@@ -853,9 +1014,19 @@ index 6ae0cad..485972d 100644
 +				memset(&drawn, 0, sizeof drawn);
 +				memset(was, 0, sizeof was);
 +				memset(scanned, 0, sizeof scanned);
++				start_was = start_held = false;
 +				continue;
 +			}
-+			if (a->in.pressed[IN_START]) musec_toggle();
++			/* START: play and pause when let go - held, the pocket lock. */
++			if (a->in.down[IN_START] && !start_held &&
++			    plat_now_ms() - a->in.down_since[IN_START] > ZUNE_HOLD_MS) {
++				start_held = true;
++				lock_now = lock_allowed();
++			} else if (!a->in.down[IN_START] && (start_was || a->in.pressed[IN_START])) {
++				if (!start_held) musec_toggle();
++				start_held = false;
++			}
++			start_was = a->in.down[IN_START];
 +			if (a->in.pressed[IN_Y]) zx_like_now();
 +			if (in_repeat(&a->in, IN_UP))   plat_volume_nudge(+1);
 +			if (in_repeat(&a->in, IN_DOWN)) plat_volume_nudge(-1);
@@ -880,21 +1051,24 @@ index 6ae0cad..485972d 100644
  		/* A, and only A. X did the same thing here and pausing in the list,
  		 * which made one button mean two things a screen apart; it is left
  		 * free in Muse for something that needs it. Eric's call, 2026-09-19. */
-@@ -8553,10 +8993,13 @@ static muse_exit muse_now_screen(app *a)
+@@ -8553,10 +9061,15 @@ static muse_exit muse_now_screen(app *a)
  		if (in_repeat(&a->in, IN_R1))       musec_next();
  		if (in_repeat(&a->in, IN_LEFT))     musec_seek_by(-seek_step(&a->in, IN_LEFT));
  		if (in_repeat(&a->in, IN_RIGHT))    musec_seek_by(+seek_step(&a->in, IN_RIGHT));
+-		if (muse_keys(a)) {
 +		}
- 		if (muse_keys(a)) {
++		if (lock_now || muse_keys(a)) {
++			lock_now = false;
  			muse_locked(a);
  			if (!a->running || g_muse_gone) { how = MUSE_CLOSE; break; }
  			memset(&drawn, 0, sizeof drawn);   /* the screen is back: draw it */
 +			memset(was, 0, sizeof was);
 +			memset(scanned, 0, sizeof scanned);
++			start_was = start_held = false;
  			continue;
  		}
  
-@@ -8629,6 +9072,19 @@ static int muse_playing_album(int *row)
+@@ -8629,6 +9142,19 @@ static int muse_playing_album(int *row)
  	const char *t = musec_track(musec_now()->index);
  	int al = ml_album_of(&g_muse, t), i;
  
@@ -914,7 +1088,7 @@ index 6ae0cad..485972d 100644
  	if (row) *row = 0;
  	if (al < 0) return -1;
  	if (row)
-@@ -8754,9 +9210,13 @@ static muse_exit muse_tracks(app *a, int album, bool now)
+@@ -8754,9 +9280,13 @@ static muse_exit muse_tracks(app *a, int album, bool now)
  						paths[i] = g_muse.tracks[al->first + i].path;
  					/* A book's file from its start: choosing one is choosing
  					 * where to listen from, and the place moves with it. */
@@ -929,7 +1103,7 @@ index 6ae0cad..485972d 100644
  					free(paths);
  				}
  			}
-@@ -8811,7 +9271,8 @@ static bool muse_open(app *a, const menu_style *over, void *ctx)
+@@ -8811,7 +9341,8 @@ static bool muse_open(app *a, const menu_style *over, void *ctx)
  	g_muse_over = over;
  	g_muse_over_ctx = ctx;
  	g_muse_gone = false;
@@ -939,7 +1113,7 @@ index 6ae0cad..485972d 100644
  	g_muse_over = NULL;
  	g_muse_over_ctx = NULL;
  	/* Nothing Muse did closes the menu it may have been opened over. */
-@@ -8852,6 +9313,9 @@ static muse_exit muse_album(app *a, const sysview *v, int k)
+@@ -8852,6 +9383,9 @@ static muse_exit muse_album(app *a, const sysview *v, int k)
  	return muse_tracks(a, v->album[k], false);
  }
  
@@ -949,7 +1123,7 @@ index 6ae0cad..485972d 100644
  /* Muse's shelf again after its menu, whose Rescan Folder rebuilds every view
   * on the card, so the view being held is found again rather than trusted.
   * NULL when there is no Muse left to show. */
-@@ -8901,13 +9365,12 @@ static int muse_card_of(const sysview *v, int album)
+@@ -8901,13 +9435,12 @@ static int muse_card_of(const sysview *v, int album)
  static void muse_shelf_screen(app *a, bool now)
  {
  	int prev_screen = a->screen, prev_sys = a->sys_cursor;
@@ -965,7 +1139,7 @@ index 6ae0cad..485972d 100644
  	for (i = 0; i < a->sys.count; i++)
  		if (is_muse(&a->sys.systems[i])) { muse = i; break; }
  	if (muse < 0 || a->view[muse].list.count <= 0) return;
-@@ -9014,6 +9477,11 @@ static int muse_artist_of(int al)
+@@ -9014,6 +9547,11 @@ static int muse_artist_of(int al)
  
  static void muse_album_dir(int al, char *out, size_t n)
  {
@@ -977,7 +1151,7 @@ index 6ae0cad..485972d 100644
  	const char *p = g_muse.albums[al].n > 0 ? g_muse.tracks[g_muse.albums[al].first].path : "";
  	const char *slash = strrchr(p, '/');
  
-@@ -9041,7 +9509,7 @@ static int museart_jobs(museart_job *jobs, int max)
+@@ -9041,7 +9579,7 @@ static int museart_jobs(museart_job *jobs, int max)
  		 * own file or the picture in its folder. Nor Singles, which is no
  		 * record at all and has its own cover. */
  		if (g_muse.albums[i].n <= 0 || g_muse.albums[i].book ||
@@ -986,7 +1160,33 @@ index 6ae0cad..485972d 100644
  		muse_album_dir(i, dir, sizeof dir);
  		snprintf(key, sizeof key, "museart.%s", dir);
  		ml_cover_base(g_muse_root, &g_muse, i, j->base, sizeof j->base);
-@@ -10003,6 +10471,8 @@ static void launch(app *a)
+@@ -9447,6 +9985,7 @@ static int gm_width(app *a)
+ 	int w = 0, k;
+ 
+ 	gm_build(a, rows, &b);
++	rows[GM_SOUND].value = "zune music";        /* the longest the row says */
+ 	for (k = 0; k < DMODE_COUNT; k++) {
+ 		int mw;
+ 		rows[GM_DISPLAY].value = DMODES[k].label;
+@@ -9514,6 +10053,17 @@ static menu_result gm_key(app *a, void *ctx, in_button key, int sel)
+ 		gm_cycle_display(a, key == IN_RIGHT ? 1 : -1);
+ 		return MENU_STAY;
+ 	}
++	/* What is heard while playing: the game, or the music - which, playing,
++	 * quiets the game (ADR-0032, followed on every tick). Two values, so
++	 * left, right and A all turn it over. Music with nothing loaded starts
++	 * the whole library shuffled, as the Zune's "shuffle all". */
++	if (sel == GM_SOUND && (key == IN_LEFT || key == IN_RIGHT || key == IN_ACCEPT)) {
++		const mu_state st = musec_now()->state;
++
++		if (st == MU_PLAYING || st == MU_PAUSED) musec_toggle();
++		else zx_shuffle_all();
++		return MENU_STAY;
++	}
+ 	if (key != IN_ACCEPT) return MENU_STAY;
+ 
+ 	switch ((gm_row)sel) {
+@@ -10003,6 +10553,8 @@ static void launch(app *a)
  		 * the display, so this side tears its own down first. */
  		anim_launch(a, 190);
  		free_all_textures(a);
@@ -995,7 +1195,7 @@ index 6ae0cad..485972d 100644
  		ui_quit();
  		plat_input_quit();
  		plat_video_quit();
-@@ -10048,6 +10518,8 @@ static void launch(app *a)
+@@ -10048,6 +10600,8 @@ static void launch(app *a)
  		if (!plat_video_init() || !plat_input_init()) { a->running = false; return; }
  		a->r = plat_renderer();
  		ui_init(a->r, P_FONT);
@@ -1004,7 +1204,7 @@ index 6ae0cad..485972d 100644
  		a->menu_w = 0;   /* fonts reopened: remeasure the panel */
  		prime_sys_window(a);
  		prime_window(a, a->sys_cursor);
-@@ -10126,6 +10598,9 @@ static void enter_system(app *a)
+@@ -10126,6 +10680,9 @@ static void enter_system(app *a)
  	 * own A - see update_games. */
  	if (v->list.count == 0) return;
  	a->screen = SCREEN_GAMES;
@@ -1014,7 +1214,7 @@ index 6ae0cad..485972d 100644
  	cf_reset(&v->cf, v->cursor);
  	prime_window(a, a->sys_cursor);
  }
-@@ -10233,10 +10708,13 @@ static void update_systems(app *a)
+@@ -10233,10 +10790,13 @@ static void update_systems(app *a)
  	 * the first system at the bottom, the last at the top, so up advances.
  	 * Down-is-next is the convention for a list on a page; a stack is read
  	 * from the bottom, and this shelf is a stack. */
@@ -1030,7 +1230,7 @@ index 6ae0cad..485972d 100644
  	if (in_repeat(&a->in, back)) { a->sys_cursor = (a->sys_cursor - 1 + n) % n; dir = -1; }
  	if (in_repeat(&a->in, fwd))  { a->sys_cursor = (a->sys_cursor + 1) % n; dir = +1; }
  	if (dir) load_ahead(a);
-@@ -10335,21 +10813,23 @@ static void update_games(app *a)
+@@ -10335,21 +10895,23 @@ static void update_games(app *a)
  	 * reassigned onto the other: stepping always runs along the row, and the
  	 * letter jump always runs across it. Turning the shelf turns the d-pad
  	 * with it and nothing is left doing two jobs. */
@@ -1059,7 +1259,7 @@ index 6ae0cad..485972d 100644
  	/* HERE, AND NOT AT THE END OF THE PASS, because four of the handlers below
  	 * return without reaching the end.
  	 *
-@@ -10691,11 +11171,22 @@ static void muse_order_view(sysview *v)
+@@ -10691,11 +11253,22 @@ static void muse_order_view(sysview *v)
  	if (!v->album) return;
  	v->list.count = ml_shelf_order(&g_muse, (ml_order)v->sort, muse_books_shown(),
  	                               v->album);
@@ -1083,7 +1283,7 @@ index 6ae0cad..485972d 100644
  		snprintf(e->title, sizeof e->title, "%s", g_muse.albums[al].name);
  		muse_album_dir(al, e->file, sizeof e->file);
  	}
-@@ -10823,7 +11314,7 @@ static void flat_albums_find(void)
+@@ -10823,7 +11396,7 @@ static void flat_albums_find(void)
  		const ml_album *al = &g_muse.albums[i];
  		const char *p, *slash;
  
@@ -1092,7 +1292,7 @@ index 6ae0cad..485972d 100644
  		p = g_muse.tracks[al->first].path;            /* Music/<album>/<track> */
  		if (strncmp(p, "Music/", 6) || !(slash = strchr(p + 6, '/')) ||
  		    strchr(slash + 1, '/'))
-@@ -10955,6 +11446,7 @@ static void build_muse_shelf(app *a)
+@@ -10955,6 +11528,7 @@ static void build_muse_shelf(app *a)
  	 * different album at every index. */
  	g_muse_gen++;
  	g_nflat = 0;
@@ -1100,7 +1300,7 @@ index 6ae0cad..485972d 100644
  	ml_free(&g_muse);
  	free(g_cov);
  	g_cov = NULL;
-@@ -11185,6 +11677,14 @@ static const char *shot_kb_text = "correct horse";
+@@ -11185,6 +11759,14 @@ static const char *shot_kb_text = "correct horse";
  static const char *shot_kb_title = "Wi-Fi password";
  static int shot_slots, shot_slot_sel;
  static int shot_jump;               /* letter-jumps to apply before drawing */
@@ -1115,7 +1315,7 @@ index 6ae0cad..485972d 100644
  /* --nowplaying ALBUM [TRACK [SECONDS]], and --paused with it. */
  static int   shot_np = -1, shot_np_track, shot_np_paused;
  static float shot_np_at = 83.0f;
-@@ -11346,6 +11846,7 @@ static void take_shot(app *a)
+@@ -11346,6 +11928,7 @@ static void take_shot(app *a)
  		menu_draw(a, head, rows, n, -1, menu_std_width(a), MENU_ACCENT);
  	}
  	if (shot_np >= 0) np_shot(a);
@@ -1123,7 +1323,7 @@ index 6ae0cad..485972d 100644
  	if (shot_art)
  		art_preview(a, shot_art_now, "4 of 10 systems",
  		            "37 found, 2 missing, 61 already", true);
-@@ -11528,6 +12029,11 @@ int main(int argc, char *argv[])
+@@ -11528,6 +12111,11 @@ int main(int argc, char *argv[])
  		else if (!strcmp(argv[i], "--gamemove") && i + 1 < argc)
  			shot_gamemove = (float)atof(argv[++i]);
  		else if (!strcmp(argv[i], "--info")) shot_info = 1;
@@ -1135,7 +1335,7 @@ index 6ae0cad..485972d 100644
  		else if (!strcmp(argv[i], "--controls")) {
  			shot_controls = 0;
  			if (i + 1 < argc && argv[i + 1][0] >= '0' && argv[i + 1][0] <= '9')
-@@ -11921,6 +12427,7 @@ int main(int argc, char *argv[])
+@@ -11921,6 +12509,7 @@ int main(int argc, char *argv[])
  			 * cover it would ask for is drawn as missing instead - see
  			 * muse_covers_settle. */
  			musec_init(shot_path ? "" : bin, music);
@@ -1143,7 +1343,7 @@ index 6ae0cad..485972d 100644
  			musec_on_before_heard(aout_before_muse);
  		}
  		/* The play mode the player left it in. */
-@@ -11954,10 +12461,11 @@ int main(int argc, char *argv[])
+@@ -11954,10 +12543,11 @@ int main(int argc, char *argv[])
  	 * The card settings are only read by drawing, which comes long after. */
  	{
  		char set[CFG_STR];
@@ -1156,7 +1356,7 @@ index 6ae0cad..485972d 100644
  	}
  	a.sys_cursor = 0;
  	db_get_str(db_lib(), "startup_system", startup, sizeof startup, "");
-@@ -12028,6 +12536,8 @@ int main(int argc, char *argv[])
+@@ -12028,6 +12618,8 @@ int main(int argc, char *argv[])
  	 * saved brightness does. Read before ui_init, which is when the scale is
  	 * applied. */
  	if (!ui_init(a.r, P_FONT)) fprintf(stderr, "font init failed\n");
@@ -1165,7 +1365,7 @@ index 6ae0cad..485972d 100644
  	t_mark("font+settings");
  
  	/* The system cards asked for before the display came up, installed so the
-@@ -12044,6 +12554,20 @@ int main(int argc, char *argv[])
+@@ -12044,6 +12636,20 @@ int main(int argc, char *argv[])
  
  	if (shot_path) {
  		if (shot_screen >= 0) a.screen = (screen_id)shot_screen;
@@ -1186,7 +1386,7 @@ index 6ae0cad..485972d 100644
  		if (shot_jump) {
  			sysview *v = &a.view[a.sys_cursor];
  			int k, dir = shot_jump > 0 ? 1 : -1;
-@@ -12230,7 +12754,7 @@ int main(int argc, char *argv[])
+@@ -12230,7 +12836,7 @@ int main(int argc, char *argv[])
  		 * MENU opens in a game. It draws over the shelf and returns here.
  		 * Both handles its own, because there MENU and B mean two different
  		 * menus and the screen cannot say which. */
@@ -1195,7 +1395,7 @@ index 6ae0cad..485972d 100644
  			update_both(&a);
  		} else {
  			if (a.in.pressed[IN_MENU]) { tortos_menu(&a); continue; }
-@@ -12277,6 +12801,8 @@ done:
+@@ -12277,6 +12883,8 @@ done:
  		free(a.view[i].tex); free(a.view[i].tw); free(a.view[i].th);
  		lib_free(&a.view[i].list);
  	}
@@ -1977,10 +2177,10 @@ index 0000000..8e0c383
 +}
 diff --git a/src/zune.h b/src/zune.h
 new file mode 100644
-index 0000000..05d553b
+index 0000000..38ded17
 --- /dev/null
 +++ b/src/zune.h
-@@ -0,0 +1,157 @@
+@@ -0,0 +1,158 @@
 +/* SPDX-License-Identifier: MIT */
 +#ifndef TORTOS_ZUNE_H
 +#define TORTOS_ZUNE_H
@@ -2014,6 +2214,7 @@ index 0000000..05d553b
 +#define ZUNE_ACCENT 0xEC008Cu      /* Zune magenta: hearts and the progress */
 +#define ZUNE_MENU_EASE 0.35f       /* how far a menu's selection eases a frame */
 +#define ZUNE_SCAN_MS   500         /* the pad held this long scans, not skips */
++#define ZUNE_HOLD_MS   1000        /* START held this long locks the screen */
 +
 +typedef enum {
 +	ZF_MENU,    /* the main menu's words                      */
@@ -2140,10 +2341,10 @@ index 0000000..05d553b
 +#endif
 diff --git a/src/zune_music.h b/src/zune_music.h
 new file mode 100644
-index 0000000..43718e9
+index 0000000..81eb33d
 --- /dev/null
 +++ b/src/zune_music.h
-@@ -0,0 +1,1882 @@
+@@ -0,0 +1,1901 @@
 +/* SPDX-License-Identifier: MIT */
 +/* The Zune theme's music: the original Zune's, on Muse.
 + *
@@ -3126,6 +3327,17 @@ index 0000000..43718e9
 +	free(paths);
 +}
 +
++/* Every song, shuffled: the Zune's "shuffle all", for the in-game menu's
++ * Sound row when nothing is loaded. False with no music on the card. */
++static bool zx_shuffle_all(void)
++{
++	zx_ensure();
++	zx_songs_ensure();
++	if (zx_nsongs <= 0) return false;
++	zx_play_tracks(zx_songs, zx_nsongs, 0, true, -1);
++	return true;
++}
++
 +static void zx_queue_tracks(const int *t, int n)
 +{
 +	const char **paths;
@@ -3694,18 +3906,21 @@ index 0000000..43718e9
 +/* ---- the zune menu -------------------------------------------------------------- */
 +
 +/* The words the zune menu offers right now: now playing while something
-+ * is, then the collection's own - each opens the twist at itself, the way
-+ * "game boy" lists the systems whose games are its twist. `what` is a
-+ * zl_kind, or ZM_NOW. */
++ * is, then the collection's own that have anything in them - no playlists
++ * with none, no genres without the index - each opening the twist at itself,
++ * the way "game boy" lists the systems whose games are its twist. `what` is
++ * a zl_kind, or ZM_NOW. */
 +#define ZM_NOW  (-1)
 +#define ZM_MAX  (ZT_NMUSIC + 2)
 +static int zm_items(const char **names, int *what)
 +{
 +	int i, n = 0;
 +
++	zx_ensure();                        /* genres and liked songs are the index's */
 +	if (zx_loaded()) { names[n] = "now playing"; what[n++] = ZM_NOW; }
-+	for (i = 0; i < ZT_NMUSIC; i++) { names[n] = ZL_NAME[ZT_MUSIC[i]]; what[n++] = (int)ZT_MUSIC[i]; }
-+	if (ml_count(&g_muse, true) > 0) { names[n] = ZL_NAME[ZL_BOOKS]; what[n++] = (int)ZL_BOOKS; }
++	for (i = 0; i < ZT_NMUSIC; i++)
++		if (zt_has(ZT_MUSIC[i])) { names[n] = ZL_NAME[ZT_MUSIC[i]]; what[n++] = (int)ZT_MUSIC[i]; }
++	if (zt_has(ZL_BOOKS)) { names[n] = ZL_NAME[ZL_BOOKS]; what[n++] = (int)ZL_BOOKS; }
 +	return n;
 +}
 +
@@ -3753,7 +3968,8 @@ index 0000000..43718e9
 +	unsigned last = 0;
 +	bool dirty = true;
 +
-+	if (sel < 0) sel = zm_find(what, n, ZL_ARTISTS);
++	if (n <= 0) return;
++	if (sel < 0) sel = 0;
 +	pos = (float)sel;
 +	plat_input_flush();
 +	memset(&a->in, 0, sizeof a->in);
@@ -3763,6 +3979,7 @@ index 0000000..43718e9
 +			int was = what[sel], k;
 +
 +			n = zm_items(names, what);
++			if (n <= 0) break;                       /* the library emptied */
 +			if ((k = zm_find(what, n, was)) >= 0) { pos += (float)(k - sel); sel = k; }
 +			else if (sel >= n) sel = n - 1;
 +		}
@@ -3898,11 +4115,12 @@ index 0000000..43718e9
 +}
 +
 +/* Now Playing's options, as they stand: rate the song (when it is one the
-+ * library knows), the song list, shuffle and repeat - the Zune's four. */
-+enum { ZN_RATE, ZN_LIST, ZN_SHUFFLE, ZN_REPEAT, ZN_COUNT };
++ * library knows), the song list, shuffle and repeat - the Zune's four - and,
++ * while music plays, the pocket lock. */
++enum { ZN_RATE, ZN_LIST, ZN_SHUFFLE, ZN_REPEAT, ZN_LOCK, ZN_COUNT };
 +typedef struct { const char *items[ZN_COUNT]; int acts[ZN_COUNT], n; char sh[32], rp[32]; } zn_menu;
 +
-+static void zn_items(zn_menu *m, int rating, bool rated, muq_mode mode)
++static void zn_items(zn_menu *m, int rating, bool rated, muq_mode mode, bool lockable)
 +{
 +	m->n = 0;
 +	if (rated) {
@@ -3915,6 +4133,7 @@ index 0000000..43718e9
 +	snprintf(m->rp, sizeof m->rp, "repeat: %s",
 +	         mode == MUQ_REPEAT_ALL ? "all" : mode == MUQ_REPEAT_ONE ? "one" : "off");
 +	m->items[m->n] = m->rp; m->acts[m->n++] = ZN_REPEAT;
++	if (lockable) { m->items[m->n] = "lock screen"; m->acts[m->n++] = ZN_LOCK; }
 +}
 +
 +/* The center button on Now Playing. The song is looked up each pass: the
@@ -3932,7 +4151,7 @@ index 0000000..43718e9
 +		int r = zx_now_track();
 +		zn_menu m;
 +
-+		zn_items(&m, r >= 0 ? zx_rate[r] : 0, r >= 0, mode);
++		zn_items(&m, r >= 0 ? zx_rate[r] : 0, r >= 0, mode, lock_allowed());
 +		if (sel >= m.n) sel = m.n - 1;
 +		muse_screen_poll();
 +		plat_input_poll(&a->in);
@@ -3944,6 +4163,7 @@ index 0000000..43718e9
 +			switch (m.acts[sel]) {
 +			case ZN_RATE:    zx_rate_set(r, zx_rate[r] == 0 ? 1 : zx_rate[r] > 0 ? -1 : 0); break;
 +			case ZN_LIST:    zune_queue_screen(a); return;
++			case ZN_LOCK:    muse_locked(a); return;   /* back to Now Playing, lit */
 +			case ZN_SHUFFLE: zx_set_mode(mode == MUQ_SHUFFLE ? MUQ_IN_ORDER : MUQ_SHUFFLE); break;
 +			case ZN_REPEAT:  zx_set_mode(mode == MUQ_REPEAT_ALL ? MUQ_REPEAT_ONE
 +			                             : mode == MUQ_REPEAT_ONE ? MUQ_IN_ORDER : MUQ_REPEAT_ALL);
@@ -3986,7 +4206,7 @@ index 0000000..43718e9
 +	if (!strncmp(spec, "npoptions", 9)) {
 +		zn_menu m;
 +
-+		zn_items(&m, 0, true, MUQ_REPEAT_ALL);
++		zn_items(&m, 0, true, MUQ_REPEAT_ALL, true);
 +		zune_options(a->r, musec_now()->title[0] ? musec_now()->title : "track 2", m.items, m.n, 0);
 +		return;
 +	}
@@ -4066,6 +4286,25 @@ index 8326c0b..eaf1d78 100644
  			menu_row rows[CTL_MAX_ROWS];
  			int n = ctl_rows((ctl_page)p, (ctl_dir)d, rows), i;
  			int rules = 0, notes = 0;
+diff --git a/tools/menu-check.c b/tools/menu-check.c
+index 5917c7a..b93068e 100644
+--- a/tools/menu-check.c
++++ b/tools/menu-check.c
+@@ -888,11 +888,12 @@ static void ingame_rows(void)
+ 	menu_row rows[GM_ROWS];
+ 	int got[GM_ROWS], n, k;
+ 
+-	u.dmode = "Native"; u.earned = 12; u.total = 40;
++	u.dmode = "Native"; u.sound = "game"; u.earned = 12; u.total = 40;
+ 	n = gm_rows(&u, rows, &b);
+ 
+ 	printf("in-game menu, a game with a set:\n");
+-	ck(n == GM_ROWS, "seven rows");
++	ck(n == GM_ROWS, "eight rows");
++	ck(!strcmp(val(&rows[GM_SOUND]), "game"), "Sound says what is heard");
+ 	ck(!strcmp(rows[GM_CONTINUE].label, "Continue"), "Continue leads");
+ 	ck(!strcmp(val(&rows[GM_DISPLAY]), "Native"), "Display carries the mode");
+ 	ck(!strcmp(val(&rows[GM_CHEEVOS]), "12 / 40"), "Cheevos counts the set");
 -- 
 2.43.0
 
