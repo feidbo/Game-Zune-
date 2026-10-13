@@ -1,0 +1,686 @@
+From 7d490d3ce89f40e6c9e464c110b1fcf925c202c4 Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Tue, 13 Oct 2026 08:11:55 +0000
+Subject: [PATCH 1/2] Muse: playlists, counted listens, and adding to the queue
+
+The library and its player, with nothing on screen yet:
+
+- muselib: Playlists/*.m3u and .m3u8 are read as albums whose tracks
+  live in other albums' folders, after everything else. A line resolves
+  beside the playlist, from the card's top, or - for a path from another
+  computer, a file:// URL included - from its Music or Audiobooks folder
+  down, in any case; never to anything off the card. A line too long for
+  any path on the card is passed over whole.
+- musec: musec_on_played tells of a listen - thirty seconds of a track,
+  or half of a short one, played forward, not sought past - the moment
+  it is enough, once a listen; never for a book. musec_append adds to the
+  queue without stopping what plays (songs are not put on the end of a
+  book: they start), and musec_jump plays a track of the queue.
+- musequeue: muq_append, after the current track or at the end of the
+  order, what is queued keeping its place.
+
+tools/muselib-check and tools/musequeue-check cover the playlist lines
+and the appending.
+---
+ src/musec.c             |  80 ++++++++++++-
+ src/musec.h             |  14 +++
+ src/muselib.c           | 257 +++++++++++++++++++++++++++++++++++++++-
+ src/muselib.h           |  23 +++-
+ src/musequeue.c         |  15 +++
+ src/musequeue.h         |   5 +
+ tools/muselib-check.c   |  44 +++++++
+ tools/musequeue-check.c |  20 ++++
+ 8 files changed, 450 insertions(+), 8 deletions(-)
+
+diff --git a/src/musec.c b/src/musec.c
+index 619045b..a0ea541 100644
+--- a/src/musec.c
++++ b/src/musec.c
+@@ -50,6 +50,32 @@ static bool    g_book;              /* the queue is a book: in order, always */
+ static double  g_start_at;          /* where the first PLAY of a queue starts */
+ static bool    g_ran_out;           /* see musec_take_ran_out */
+ static double  g_speed = 1.0;       /* see musec_set_speed */
++/* How much of the current track has actually been heard - played forward,
++ * not sought past - for musec_on_played, which hears of it the moment it is
++ * enough, not when the track ends: a battery that runs out mid-song should
++ * not take the listen with it. */
++static char    g_heard_path[LIB_PATH * 2];
++static double  g_heard, g_heard_at;
++static bool    g_heard_book, g_heard_told;
++static void  (*g_on_played)(const char *path);
++
++/* A listen starting: of `path` (NULL: the same track again, from its top). */
++static void heard_begin(const char *path, double at)
++{
++	if (path) snprintf(g_heard_path, sizeof g_heard_path, "%s", path);
++	g_heard = 0;
++	g_heard_at = at;
++	g_heard_told = false;
++}
++
++static void heard_count(void)
++{
++	if (!g_heard_told && g_heard_path[0] && !g_heard_book && g_on_played &&
++	    (g_heard >= 30.0 || (g_now.len > 0 && g_heard >= g_now.len * 0.5))) {
++		g_heard_told = true;
++		g_on_played(g_heard_path);
++	}
++}
+ /* The playing file's chapters, from the daemon's CHAPTER lines. */
+ #define MAX_CHAPTERS 256
+ static double  g_ch_at[MAX_CHAPTERS];
+@@ -178,6 +204,8 @@ static void play_current(void)
+ 	/* Only the queue's first PLAY starts part way: every track after it is
+ 	 * one the queue moved on to, from its beginning. */
+ 	sendf("PLAY\tpath=%s/%s\tat=%.1f\tspeed=%.2f", g_root, q, g_start_at, g_speed);
++	heard_begin(q, g_start_at);
++	g_heard_book = g_book;
+ 	g_nch = 0;                     /* the new file says its own */
+ 	/* Until META says otherwise, the name the file has. */
+ 	ml_track_name(strrchr(q, '/') ? strrchr(q, '/') + 1 : q,
+@@ -294,6 +322,13 @@ static void event(const char *line)
+ 			else
+ 				g_seeking = false;
+ 		}
++		/* Heard, when it moved forward by about the time between two
++		 * reports; a jump is a seek, and a seek is not listening. */
++		if (g_now.state == MU_PLAYING && at > g_heard_at && at - g_heard_at < 3.5) {
++			g_heard += at - g_heard_at;
++			heard_count();
++		}
++		g_heard_at = at;
+ 		g_now.at = at;
+ 	} else if (!strncmp(line, "END", 3)) {
+ 		advance(false);
+@@ -543,8 +578,12 @@ void musec_prev(void)
+ 		if (c >= 0 && into > 3.0) { seek_to(g_ch_at[c]); return; }
+ 		if (c > 0)                { seek_to(g_ch_at[c - 1]); return; }
+ 	}
+-	if (g_now.at > 3.0 || muq_prev(&g_order) < 0) seek_to(0);
+-	else play_current();
++	if (g_now.at > 3.0 || muq_prev(&g_order) < 0) {
++		seek_to(0);
++		heard_begin(NULL, 0);          /* heard again from the top: a new listen */
++	} else {
++		play_current();
++	}
+ }
+ 
+ void musec_seek_by(double delta)
+@@ -562,6 +601,43 @@ void musec_stop(void)
+ 	sendf("STOP");
+ }
+ 
++void musec_on_played(void (*fn)(const char *path)) { g_on_played = fn; }
++
++void musec_jump(int i)
++{
++	if (i < 0 || i >= g_order.n) return;
++	g_order.pos = i;
++	play_current();
++}
++
++void musec_append(const char *const *paths, int n, bool next)
++{
++	char **q;
++	int i, k = 0;
++
++	if (n <= 0) return;
++	/* Something is loaded - playing, paused, or a PLAY on its way - unless
++	 * that is a book: songs are not put on the end of a book, they start. */
++	if (g_qn == 0 || g_book || (!g_pending && !g_asked &&
++	                            g_now.state != MU_PLAYING && g_now.state != MU_PAUSED)) {
++		musec_play(paths, n, 0, 0, false, 1.0, "", "");
++		return;
++	}
++	q = realloc(g_q, sizeof *q * (size_t)(g_qn + n));
++	if (!q) return;
++	g_q = q;
++	for (i = 0; i < n; i++) {
++		if (strpbrk(paths[i], "\t\n")) continue;
++		if ((g_q[g_qn + k] = strdup(paths[i]))) k++;
++	}
++	if (!muq_append(&g_order, k, next)) {
++		for (i = 0; i < k; i++) free(g_q[g_qn + i]);
++		return;
++	}
++	g_qn += k;
++	g_now.count = g_qn;
++}
++
+ bool musec_cover_ask(const char *track, const char *base)
+ {
+ 	if (strpbrk(track, "\t\n") || strpbrk(base, "\t\n")) return false;
+diff --git a/src/musec.h b/src/musec.h
+index 1e86335..c671cef 100644
+--- a/src/musec.h
++++ b/src/musec.h
+@@ -123,6 +123,20 @@ const char *musec_sink_now(void);
+  * headset to Muse first. */
+ void musec_on_before_heard(void (*fn)(void));
+ 
++/* Called with a track's path once it has been listened to: thirty seconds of
++ * it, or half when it is shorter - the scrobbling rule - at the moment that is
++ * reached, once a listen. Not for a book. The Zune theme logs these for
++ * scripts/zunesync.py's heavy rotation and discover. */
++void musec_on_played(void (*fn)(const char *path));
++
++/* Add to the queue without stopping what plays: after the current track when
++ * `next`, else at the end. With nothing loaded - or a book, which songs are
++ * not added to - it starts playing them instead. */
++void musec_append(const char *const *paths, int n, bool next);
++
++/* Play the queue's track `i`, in play order - musec_track's numbering. */
++void musec_jump(int i);
++
+ /* The queue's track `i` in PLAY order - shuffled, the i-th to be heard -
+  * relative to the music root, or NULL past either end. */
+ const char *musec_track(int i);
+diff --git a/src/muselib.c b/src/muselib.c
+index f309433..8f7bb21 100644
+--- a/src/muselib.c
++++ b/src/muselib.c
+@@ -215,7 +215,7 @@ int ml_album_of(const ml_lib *l, const char *track)
+ 	for (i = 0; i < l->nalbums; i++) {
+ 		const char *p;
+ 
+-		if (l->albums[i].n <= 0) continue;
++		if (l->albums[i].n <= 0 || l->albums[i].playlist) continue;
+ 		p = l->tracks[l->albums[i].first].path;
+ 		/* The same length first: "Pixies/Doolittle" is a prefix of
+ 		 * "Pixies/Doolittle (Deluxe)", and they are two albums. */
+@@ -231,6 +231,10 @@ void ml_cover_base(const char *root, const ml_lib *l, int al, char *out, size_t
+ 
+ 	out[0] = '\0';
+ 	if (al < 0 || al >= l->nalbums || l->albums[al].n <= 0) return;
++	if (l->albums[al].playlist) {
++		snprintf(out, n, "%s/%s/.media/%s", root, ML_PLAYLISTS_DIR, l->albums[al].name);
++		return;
++	}
+ 	p = l->tracks[l->albums[al].first].path;
+ 	d = dir_len(p);                         /* "Radiohead/The Bends" */
+ 	for (cut = d; cut > 0 && p[cut - 1] != '/'; cut--) { }
+@@ -325,6 +329,7 @@ static void add_album(ml_lib *l, int *acap, int *tcap, bool book,
+ 	snprintf(al->name, sizeof al->name, "%s", name);
+ 	al->book = book;
+ 	al->singles = false;
++	al->playlist = false;
+ 	al->first = l->ntracks;
+ 	al->n = 0;
+ 	for (i = 0; i < files->n; i++) {
+@@ -415,6 +420,234 @@ bool ml_scan(const char *root, ml_lib *out)
+ 	return scan_into(out, &c, root, "", false);
+ }
+ 
++/* ---- playlists -------------------------------------------------------------- */
++
++/* `path` with "." and ".." taken out, in place. False when ".." climbs above
++ * the start - out of the card. */
++static bool squash(char *path)
++{
++	char *seg[64], buf[LIB_PATH * 2], *tok, *save = NULL;
++	int n = 0, i;
++	size_t used = 0;
++
++	snprintf(buf, sizeof buf, "%s", path);
++	for (tok = strtok_r(buf, "/", &save); tok; tok = strtok_r(NULL, "/", &save)) {
++		if (!strcmp(tok, ".")) continue;
++		if (!strcmp(tok, "..")) { if (n == 0) return false; n--; continue; }
++		if (n >= 64) return false;
++		seg[n++] = tok;
++	}
++	/* Back into `path`, which every caller sizes LIB_PATH or more; the
++	 * result must fit a track's path, LIB_PATH. */
++	path[0] = '\0';
++	for (i = 0; i < n; i++) {
++		int k = snprintf(path + used, LIB_PATH - used, "%s%s", i ? "/" : "", seg[i]);
++
++		if (k < 0 || (size_t)k >= LIB_PATH - used) return false;
++		used += (size_t)k;
++	}
++	return n > 0;
++}
++
++static bool audio_at(const char *card, const char *rel);
++
++/* %XX in a file:// URL, decoded in place. */
++static void url_decode(char *s)
++{
++	char *o = s;
++
++	for (; *s; s++) {
++		if (s[0] == '%' && isxdigit((unsigned char)s[1]) && isxdigit((unsigned char)s[2])) {
++			char hex[3] = { s[1], s[2], 0 };
++
++			*o++ = (char)strtol(hex, NULL, 16);
++			s += 2;
++		} else {
++			*o++ = *s;
++		}
++	}
++	*o = '\0';
++}
++
++/* The card's `folder` ("Music", "Audiobooks") found in `s`, a path from
++ * another machine: at its start or after a "/", in any case - "C:/Users/me/
++ * music/Artist/..." - and tried from each place it is, first to last. */
++static bool from_folder(const char *card, const char *s, const char *folder, char *out, size_t n)
++{
++	size_t fl = strlen(folder);
++	const char *m;
++	char try[LIB_PATH * 2];
++
++	for (m = s; *m; m++) {
++		if ((m > s && m[-1] != '/') || strncasecmp(m, folder, fl) || m[fl] != '/') continue;
++		snprintf(try, sizeof try, "%s%s", folder, m + fl);
++		if (squash(try) && audio_at(card, try)) return snprintf(out, n, "%s", try) < (int)n;
++	}
++	return false;
++}
++
++static bool audio_at(const char *card, const char *rel)
++{
++	char full[LIB_PATH * 3];
++	struct stat st;
++
++	if (!ml_is_audio(rel)) return false;
++	snprintf(full, sizeof full, "%s/%s", card, rel);
++	return stat(full, &st) == 0 && S_ISREG(st.st_mode);
++}
++
++bool ml_playlist_resolve(const char *card, const char *line, char *out, size_t n)
++{
++	char s[LIB_PATH * 2], try[LIB_PATH * 2];
++	size_t i;
++
++	snprintf(s, sizeof s, "%s", line);
++	for (i = 0; s[i]; i++) if (s[i] == '\\') s[i] = '/';
++	if (!strncasecmp(s, "file://", 7)) {
++		memmove(s, s + 7, strlen(s + 7) + 1);
++		url_decode(s);
++	}
++
++	/* Beside the playlist: "../Music/Artist/Album/01.mp3". */
++	if (s[0] != '/' && !strchr(s, ':')) {
++		snprintf(try, sizeof try, "%s/%s", ML_PLAYLISTS_DIR, s);
++		if (squash(try) && audio_at(card, try)) return snprintf(out, n, "%s", try) < (int)n;
++		/* From the card's top: "Music/Artist/Album/01.mp3". */
++		snprintf(try, sizeof try, "%s", s);
++		if (squash(try) && audio_at(card, try)) return snprintf(out, n, "%s", try) < (int)n;
++	}
++	/* From another machine, or the card mounted somewhere: a Music or
++	 * Audiobooks folder in the path is the card's. */
++	return from_folder(card, s, "Music", out, n) || from_folder(card, s, "Audiobooks", out, n);
++}
++
++/* A playlist's track as its list shows it: the song, and whose it is, since a
++ * playlist is many artists' - "Digital Love - Daft Punk". The artist is the
++ * folder over the album's, Music/<artist>/<album>/<file>. */
++static void playlist_name(const char *rel, const char *extinf, char *out, int n)
++{
++	const char *file = strrchr(rel, '/');
++	char song[128];
++
++	if (extinf && extinf[0]) { snprintf(out, (size_t)n, "%s", extinf); return; }
++	ml_track_name(file ? file + 1 : rel, song, sizeof song);
++	if (!strncmp(rel, "Music/", 6)) {
++		const char *a = rel + 6, *slash = strchr(a, '/');
++
++		if (slash && strchr(slash + 1, '/')) {
++			char artist[128];
++
++			snprintf(artist, sizeof artist, "%.*s", (int)(slash - a), a);
++			ml_clean_words(artist);
++			snprintf(out, (size_t)n, "%s - %s", song, artist);
++			return;
++		}
++	}
++	snprintf(out, (size_t)n, "%s", song);
++}
++
++static bool is_playlist_file(const char *name)
++{
++	const char *dot = strrchr(name, '.');
++
++	return dot && (!strcasecmp(dot, ".m3u") || !strcasecmp(dot, ".m3u8"));
++}
++
++/* <card>/Playlists/<name>.m3u, after everything else, under one artist. A line
++ * that names nothing on the card is passed over, so a playlist made on
++ * another computer plays what it can; one that names nothing at all is not
++ * shown. */
++static void scan_playlists(ml_lib *out, caps *c, const char *card)
++{
++	char dir[LIB_PATH * 2];
++	names files = { 0 };
++	int i, before = out->nalbums;
++	ml_artist *ar;
++
++	snprintf(dir, sizeof dir, "%s/%s", card, ML_PLAYLISTS_DIR);
++	{
++		/* list_dir keeps only audio, so the playlists are listed here. */
++		DIR *d = opendir(dir);
++		struct dirent *e;
++
++		while (d && (e = readdir(d)))
++			if (e->d_name[0] != '.' && is_playlist_file(e->d_name))
++				names_add(&files, e->d_name);
++		if (d) closedir(d);
++		if (files.n) qsort(files.v, (size_t)files.n, sizeof *files.v, cmp_name);
++	}
++	for (i = 0; i < files.n; i++) {
++		char path[LIB_PATH * 3], line[LIB_PATH * 2], extinf[128] = "";
++		ml_album *al;
++		FILE *f;
++		int stem;
++
++		if (!is_playlist_file(files.v[i])) continue;
++		snprintf(path, sizeof path, "%s/%s", dir, files.v[i]);
++		if (!(f = fopen(path, "r"))) continue;
++		if (!grow((void **)&out->albums, out->nalbums, &c->a, sizeof *out->albums)) {
++			fclose(f);
++			break;
++		}
++		al = &out->albums[out->nalbums];
++		memset(al, 0, sizeof *al);
++		stem = (int)(strrchr(files.v[i], '.') - files.v[i]);
++		if (stem <= 0) { fclose(f); continue; }
++		snprintf(al->name, sizeof al->name, "%.*s", stem, files.v[i]);
++		al->playlist = true;
++		al->first = out->ntracks;
++		while (fgets(line, sizeof line, f)) {
++			char *p = line, rel[LIB_PATH];
++			size_t len;
++			ml_track *t;
++
++			/* Longer than any path on the card: passed over whole, not
++			 * read again as the start of the next line. */
++			if (!strchr(line, '\n') && !feof(f)) {
++				int ch;
++
++				while ((ch = fgetc(f)) != EOF && ch != '\n') { }
++				extinf[0] = '\0';
++				continue;
++			}
++
++			if (!strncmp(p, "\xEF\xBB\xBF", 3)) p += 3;           /* a BOM */
++			len = strlen(p);
++			while (len && (p[len - 1] == '\n' || p[len - 1] == '\r' ||
++			               p[len - 1] == ' ' || p[len - 1] == '\t'))
++				p[--len] = '\0';
++			while (*p == ' ' || *p == '\t') p++;
++			if (!*p) continue;
++			if (*p == '#') {
++				/* #EXTINF:<seconds>,<what to call it> names the next line. */
++				const char *comma = strchr(p, ',');
++
++				if (!strncmp(p, "#EXTINF:", 8) && comma)
++					snprintf(extinf, sizeof extinf, "%s", comma + 1);
++				continue;
++			}
++			if (!ml_playlist_resolve(card, p, rel, sizeof rel)) { extinf[0] = '\0'; continue; }
++			if (!grow((void **)&out->tracks, out->ntracks, &c->t, sizeof *out->tracks)) break;
++			t = &out->tracks[out->ntracks++];
++			snprintf(t->path, sizeof t->path, "%s", rel);
++			playlist_name(rel, extinf, t->name, sizeof t->name);
++			extinf[0] = '\0';
++			al->n++;
++		}
++		fclose(f);
++		if (al->n > 0) out->nalbums++;
++		else out->ntracks = al->first;
++	}
++	names_free(&files);
++	if (out->nalbums == before) return;
++	if (!grow((void **)&out->artists, out->nartists, &c->r, sizeof *out->artists)) return;
++	ar = &out->artists[out->nartists++];
++	snprintf(ar->name, sizeof ar->name, "%s", ML_PLAYLISTS_DIR);
++	ar->first = before;
++	ar->n = out->nalbums - before;
++	ar->book = false;
++}
++
+ bool ml_scan_card(const char *card, ml_lib *out)
+ {
+ 	char dir[LIB_PATH * 2];
+@@ -426,6 +659,7 @@ bool ml_scan_card(const char *card, ml_lib *out)
+ 	music = scan_into(out, &c, dir, "Music", false);
+ 	snprintf(dir, sizeof dir, "%s/Audiobooks", card);
+ 	books = scan_into(out, &c, dir, "Audiobooks", true);
++	if (music || books) scan_playlists(out, &c, card);
+ 	return music || books;
+ }
+ 
+@@ -434,7 +668,16 @@ int ml_count(const ml_lib *l, bool books)
+ 	int i, n = 0;
+ 
+ 	for (i = 0; i < l->nalbums; i++)
+-		if (l->albums[i].book == books) n++;
++		if (l->albums[i].book == books && !l->albums[i].playlist) n++;
++	return n;
++}
++
++int ml_count_playlists(const ml_lib *l)
++{
++	int i, n = 0;
++
++	for (i = 0; i < l->nalbums; i++)
++		if (l->albums[i].playlist) n++;
+ 	return n;
+ }
+ 
+@@ -484,6 +727,7 @@ void ml_free(ml_lib *lib)
+ static const struct { const char *name, *label, *book; } ORDERS[ML_ORDERS] = {
+ 	[ML_BY_ARTIST] = { "artist", "Artist", "Author" },
+ 	[ML_BY_ALBUM]  = { "album",  "Album",  "Title"  },
++	[ML_PLAYLISTS] = { "playlists", "Playlists", "Playlists" },
+ };
+ 
+ const char *ml_order_name(ml_order o)
+@@ -526,8 +770,15 @@ int ml_shelf_order(const ml_lib *l, ml_order by, bool books, int *out)
+ 	shelf_key *k;
+ 	int i, n = 0;
+ 
++	/* Playlists by themselves, in their files' order, and never books. */
++	if (by == ML_PLAYLISTS) {
++		if (books) return 0;
++		for (i = 0; i < l->nalbums; i++)
++			if (l->albums[i].playlist) out[n++] = i;
++		return n;
++	}
+ 	for (i = 0; i < l->nalbums; i++)                  /* the scan's, by artist */
+-		if (l->albums[i].book == books) out[n++] = i;
++		if (l->albums[i].book == books && !l->albums[i].playlist) out[n++] = i;
+ 	if (by != ML_BY_ALBUM || n < 2) return n;
+ 	k = malloc(sizeof *k * (size_t)n);
+ 	if (!k) return n;
+diff --git a/src/muselib.h b/src/muselib.h
+index 1efd164..4ad477e 100644
+--- a/src/muselib.h
++++ b/src/muselib.h
+@@ -34,8 +34,14 @@ typedef struct { char name[128]; char path[LIB_PATH]; } ml_track;
+  * 2026-10-05). An ordinary album in every way but one: it is no record, so
+  * Album Art leaves it alone, and its cover is the one the launcher puts at
+  * Music/.media/Singles.png. */
+-typedef struct { char name[128]; int first, n; bool book, singles; } ml_album;  /* tracks[first..] */
++/* `playlist`: one of the card's Playlists/<name>.m3u files, read as an album whose
++ * tracks live in other albums' folders. Its name is the file's, without the
++ * extension; its cover is kept at Playlists/.media/<name>.jpg; and it comes
++ * last in the library, under an artist of its own, so an album's index and
++ * ml_album_of's answer for a track are both the same as without it. */
++typedef struct { char name[128]; int first, n; bool book, singles, playlist; } ml_album;  /* tracks[first..] */
+ #define ML_SINGLES "Singles"
++#define ML_PLAYLISTS_DIR "Playlists"
+ typedef struct { char name[128]; int first, n; bool book; } ml_artist; /* albums[first..] */
+ 
+ typedef struct {
+@@ -56,8 +62,16 @@ bool ml_scan(const char *root, ml_lib *out);
+  * neither folder is there. */
+ bool ml_scan_card(const char *card, ml_lib *out);
+ 
+-/* How many albums of one kind: books, or music. */
++/* How many albums of one kind: books, or music. Playlists are neither. */
+ int ml_count(const ml_lib *l, bool books);
++int ml_count_playlists(const ml_lib *l);
++
++/* Where a playlist's line points, as a path relative to the card, when that is
++ * an audio file on it. `line` is what the .m3u says: relative to the
++ * playlist's own folder, relative to the card, or a path from another
++ * computer with a Music folder in it (C:\Users\me\Music\Artist\...), which
++ * is matched from that Music folder down. */
++bool ml_playlist_resolve(const char *card, const char *line, char *out, size_t n);
+ void ml_free(ml_lib *lib);
+ 
+ /* Whether a file name is audio Muse plays, by extension. */
+@@ -113,7 +127,10 @@ bool ml_folder_image(const char *root, const ml_lib *l, int al, char *out, size_
+  * Nothing here orders by date or by listening. Muse keeps no record of what
+  * was played, and the card knows no release years - the tags that carry them
+  * are read by the daemon, not the scan. */
+-typedef enum { ML_BY_ARTIST, ML_BY_ALBUM, ML_ORDERS } ml_order;
++/* Playlists is the third: not an order of the albums but the playlists in
++ * their place, by name - the Zune put them on the same row as artists and
++ * albums. The other two leave playlists out. */
++typedef enum { ML_BY_ARTIST, ML_BY_ALBUM, ML_PLAYLISTS, ML_ORDERS } ml_order;
+ 
+ /* What the setting stores, and what the menu row shows - which for books is
+  * Author and Title, the same two orders under the names a book goes by. */
+diff --git a/src/musequeue.c b/src/musequeue.c
+index 49ce0b1..cf7de05 100644
+--- a/src/musequeue.c
++++ b/src/musequeue.c
+@@ -161,3 +161,18 @@ int muq_upcoming(const muq *q)
+ 	if (q->mode == MUQ_REPEAT_ALL) return q->order[0];
+ 	return -1;
+ }
++
++bool muq_append(muq *q, int k, bool next)
++{
++	int *o, i, at;
++
++	if (k <= 0) return true;
++	o = realloc(q->order, sizeof *o * (size_t)(q->n + k));
++	if (!o) return false;
++	q->order = o;
++	at = next && q->n > 0 ? q->pos + 1 : q->n;
++	for (i = q->n - 1; i >= at; i--) q->order[i + k] = q->order[i];
++	for (i = 0; i < k; i++) q->order[at + i] = q->n + i;
++	q->n += k;
++	return true;
++}
+diff --git a/src/musequeue.h b/src/musequeue.h
+index 89046d0..1f9ed34 100644
+--- a/src/musequeue.h
++++ b/src/musequeue.h
+@@ -68,4 +68,9 @@ void muq_set_mode(muq *q, muq_mode m);
+  * there. */
+ int muq_upcoming(const muq *q);
+ 
++/* Tracks n..n+k-1, just added to the list being played: after the one playing
++ * when `next`, else at the end of the order. What is already queued keeps its
++ * place, so "add to now playing" never changes what plays before it. */
++bool muq_append(muq *q, int k, bool next);
++
+ #endif
+diff --git a/tools/muselib-check.c b/tools/muselib-check.c
+index 24a1816..5114799 100644
+--- a/tools/muselib-check.c
++++ b/tools/muselib-check.c
+@@ -350,6 +350,49 @@ static void card(void)
+ 	ml_free(&l);
+ }
+ 
++/* A playlist's lines, as ml_playlist_resolve finds them on the card - and
++ * never off it. */
++static void resolve(void)
++{
++	char out[512];
++	const char *want = "Music/Art/Rec/01 Song.mp3";
++
++	printf("  playlist lines\n");
++	dir("Music"); dir("Music/Art"); dir("Music/Art/Rec");
++	dir("Audiobooks"); dir("Audiobooks/Book"); dir("Playlists");
++	touch("Music/Art/Rec/01 Song.mp3");
++	touch("Audiobooks/Book/1.mp3");
++	CHECK(ml_playlist_resolve(root, "../Music/Art/Rec/01 Song.mp3", out, sizeof out) &&
++	      !strcmp(out, want), "beside the playlist: got \"%s\"", out);
++	CHECK(ml_playlist_resolve(root, "Music/Art/Rec/01 Song.mp3", out, sizeof out) &&
++	      !strcmp(out, want), "from the card's top: got \"%s\"", out);
++	CHECK(ml_playlist_resolve(root, "C:\\Users\\me\\music\\Art\\Rec\\01 Song.mp3", out, sizeof out) &&
++	      !strcmp(out, want), "a Windows path, its music folder lowercase: got \"%s\"", out);
++	CHECK(ml_playlist_resolve(root, "file:///Users/me/Music/Art/Rec/01%20Song.mp3", out, sizeof out) &&
++	      !strcmp(out, want), "a file:// URL, its spaces encoded: got \"%s\"", out);
++	CHECK(ml_playlist_resolve(root, "/Volumes/X/Audiobooks/Book/1.mp3", out, sizeof out) &&
++	      !strcmp(out, "Audiobooks/Book/1.mp3"), "a book by its folder: got \"%s\"", out);
++	CHECK(!ml_playlist_resolve(root, "/x/MyAudiobooks/Book/1.mp3", out, sizeof out),
++	      "a folder only ending in Audiobooks is not the card's");
++	CHECK(!ml_playlist_resolve(root, "/x/MyMusic/Art/Rec/01 Song.mp3", out, sizeof out),
++	      "nor one ending in Music");
++	CHECK(ml_playlist_resolve(root, "../../Music/Art/Rec/01 Song.mp3", out, sizeof out) &&
++	      !strcmp(out, want), "a path climbing out lands on the card's own Music: got \"%s\"", out);
++	CHECK(!ml_playlist_resolve(root, "../../Other/01 Song.mp3", out, sizeof out),
++	      "and with no Music in it, nowhere");
++	CHECK(!ml_playlist_resolve(root, "../Music/../../etc/passwd", out, sizeof out),
++	      "nor climbing out from inside it");
++	{
++		char longline[1500];
++		size_t i;
++
++		for (i = 0; i + 3 < sizeof longline; i += 3) memcpy(longline + i, "ab/", 3);
++		longline[i] = '\0';
++		CHECK(!ml_playlist_resolve(root, longline, out, sizeof out),
++		      "a path longer than any on the card is no song");
++	}
++}
++
+ int main(void)
+ {
+ 	char cmd[300];
+@@ -362,6 +405,7 @@ int main(void)
+ 	scan();
+ 	orders();
+ 	card();
++	resolve();
+ 
+ 	snprintf(cmd, sizeof cmd, "rm -rf '%s'", root);
+ 	if (system(cmd) != 0) { }
+diff --git a/tools/musequeue-check.c b/tools/musequeue-check.c
+index 57ed3ff..ba2688c 100644
+--- a/tools/musequeue-check.c
++++ b/tools/musequeue-check.c
+@@ -171,6 +171,25 @@ static void empty(void)
+ 	muq_free(&q);
+ }
+ 
++/* "add to now playing": what is queued keeps its place. */
++static void append(void)
++{
++	muq q;
++
++	printf("  append\n");
++	muq_init(&q, 3, 0, MUQ_IN_ORDER, 1);
++	CHECK(muq_append(&q, 2, false), "two more, at the end");
++	CHECK(muq_current(&q) == 0, "what plays goes on playing: %d", muq_current(&q));
++	CHECK(muq_ended(&q) == 1 && muq_ended(&q) == 2 && muq_ended(&q) == 3 && muq_ended(&q) == 4,
++	      "the old ones first, then the new");
++	muq_free(&q);
++	muq_init(&q, 3, 0, MUQ_IN_ORDER, 1);
++	CHECK(muq_append(&q, 2, true), "two more, next");
++	CHECK(muq_ended(&q) == 3 && muq_ended(&q) == 4 && muq_ended(&q) == 1 && muq_ended(&q) == 2,
++	      "the new ones next, then the rest");
++	muq_free(&q);
++}
++
+ int main(void)
+ {
+ 	printf("musequeue: the play modes\n");
+@@ -180,6 +199,7 @@ int main(void)
+ 	shuffle();
+ 	changing_mode();
+ 	empty();
++	append();
+ 	if (failures) {
+ 		printf("\n%d failure%s\n", failures, failures == 1 ? "" : "s");
+ 		return 1;
+-- 
+2.43.0
+

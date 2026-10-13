@@ -241,7 +241,8 @@ What it does:
      `--lastfm-key YOURKEY --lastfm-user YOURNAME` (the user part also counts your scrobbles in
      heavy rotation).
 3. Reads what the **Pixel 2 recorded**: every song you listened to for 30 seconds or half its
-   length is logged to `Music/.zune/plays.log`, and your hearts to `ratings.tsv`.
+   length is logged to `Music/.zune/plays.log`, your likes are the **liked songs** playlist, and
+   your dislikes are in `Music/.zune/ratings.tsv`.
 4. Writes the nine playlists with Zune-style covers. It also writes `Music/.zune/library.tsv`,
    which gives the Pixel 2 real song titles, genres (the **genres** twist), years, lengths and
    tags.
@@ -262,10 +263,10 @@ Things to know:
 
 **Liked songs** (`Playlists/liked songs.m3u8`) is kept by the Pixel 2, not by this script: the
 songs you liked there (Y on Now Playing), in the order you liked them. It's an ordinary playlist
-file, so your computer and other players can use it too. A song you add to it by hand counts as
-liked the next time the Pixel 2 reads it. To take a song off, unlike it on the device; removing
-the line on your computer isn't enough, because the like itself is kept in
-`Music/.zune/ratings.tsv`.
+file, so your computer and other players can use it too, and it **is** your likes: add a line on
+your computer and that song is liked; remove one and it isn't. A line for a song that isn't on
+the card right now is kept, so the like comes back with the song. (Likes from before liked songs
+existed move onto it by themselves.)
 
 **Your own playlists** work too. Export an `.m3u` from iTunes/Music, foobar2000, MusicBee or
 VLC into `Playlists/`. Muse finds each song on the card by the `Music/…` part of its path, so
@@ -319,33 +320,37 @@ scripts/preview.sh                      # demo card
 CARD=/media/$USER/TORTOS scripts/preview.sh   # your own games and music (read only)
 ```
 
-### What the patch changes
+### What the patches change
 
-- `src/zune.c`, `src/zune.h` (new): the drawing - the main menu's words over the background
-  picture, the twist row (words or tiny covers), lists with "shuffle all" / "play all", the
-  fast-scroll letter, the options menu, hearts, the no-art pattern and Now Playing.
-- `src/main.c`:
-  - Hooks the theme into the shelves, the Muse album shelf and Now Playing.
-  - The top menu (**zune** / **game boy**), the game boy menu, and the games list as a twist
-    across the three systems.
-  - Now Playing's Zune keys: A/X for its options, START play/pause, the pad to skip/scan and for
-    volume.
-  - Adds `--theme`, `--sys`, `--sort`, `--zmusic` and `--zlevel` to the screenshot harness.
-- `src/ui.c`, `src/ui.h`: switching the menu typeface at runtime, and flat panels.
-- `src/cards.h`: *Zune* as a third UI Theme, and the default.
-- `src/controls.*`: a Controls page for the Zune layout.
-- `src/muselib.*` (second patch): playlists. `Playlists/*.m3u` / `.m3u8` are read as albums whose tracks
-  live in other albums' folders. Each has its own cover location, and they are shown under a third
-  shelf order, *Playlists*. Paths are resolved relative to the playlist, the card, or the `Music/`
-  folder in a path from another computer, and never outside the card.
-- Third patch, the music collection's data:
-  - `src/zune_music.h` (new, included into `main.c`): reads `library.tsv`, `plays.log` and
-    `ratings.tsv`, and (since the fourth patch) is the twist browser and the zune menu.
-  - `src/musec.*`, `src/musequeue.*`: counting a listen (30 s or half the song, seeking excluded),
-    adding to the queue without interrupting it, and jumping within it.
-  - `src/device/brick.c`: the rest of the pad on the desktop build's keyboard, for driving it in tests.
-- Fourth patch: the original Zune's look in place of the third patch's Zune HD-style screens, and
-  the top menu.
+Two patches, in `tortos-zune/patches/`, each building and passing TortOS's checks on its own:
+
+1. **Muse: playlists, counted listens, and adding to the queue** - the music library and player,
+   nothing on screen:
+   - `src/muselib.*`: `Playlists/*.m3u` / `.m3u8` are read as albums whose tracks live in other
+     albums' folders. A line resolves beside the playlist, from the card's top, or from the
+     `Music`/`Audiobooks` folder in a path from another computer (Windows paths and `file://`
+     URLs included), and never to anything off the card.
+   - `src/musec.*`, `src/musequeue.*`: a listen is counted (30 s or half the song, seeking
+     excluded) the moment it's enough; adding to the queue without stopping what plays; jumping
+     within it.
+   - `tools/muselib-check.c`, `tools/musequeue-check.c`: tests for those.
+2. **The Zune theme**:
+   - `src/zune.c`, `src/zune.h` (new): the drawing - the menu words over the background picture,
+     the twist row (words or tiny covers), lists with "shuffle all" / "play all", the fast-scroll
+     letter, the options menu, hearts, the no-art pattern and Now Playing. Fonts and the
+     background are opened only when the theme first draws.
+   - `src/zune_music.h` (new, included into `main.c`): the music - the zune menu, the twist
+     browser, Now Playing's options and song list, liked songs, and reading `library.tsv` and
+     `ratings.tsv`.
+   - `src/main.c`: the top menu (**zune** / **game boy** / **settings**), the game boy menu, the
+     games list as a twist across the systems, Now Playing's Zune keys, keeping the shelf in step
+     when the theme changes, and `--theme`, `--sys`, `--sort`, `--zmusic` and `--zlevel` for the
+     screenshot harness.
+   - `src/ui.*`: switching the menus' typeface at runtime, and flat panels.
+   - `src/cards.h`: *Zune* as a third UI Theme, and the default.
+   - `src/controls.*`, `tools/controls-check.c`: the theme's Controls pages.
+   - `src/device/brick.c`: the rest of the pad on the desktop build's keyboard, for driving it in
+     tests.
 
 TortOS's own offline checks (`make check`) pass with the patches applied.
 `python3 -m unittest discover -s scripts/tests` tests the playlist rules against a fake web and

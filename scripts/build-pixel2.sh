@@ -22,7 +22,12 @@ if [ ! -f "$SYSROOT/.done" ]; then
 	img_xz=$DL/$(basename "$PIXEL2_IMAGE_URL")
 	fetch "$PIXEL2_IMAGE_URL" "$PIXEL2_IMAGE_SHA256" "$img_xz"
 	img=${img_xz%.xz}
-	[ -f "$img" ] || xz -dk "$img_xz"
+	# Unpacked beside it first, so a stopped run never leaves half an image
+	# that the next one would take for whole.
+	if [ ! -f "$img" ]; then
+		xz -dc "$img_xz" > "$img.part"
+		mv "$img.part" "$img"
+	fi
 
 	# The root filesystem is the image's Linux partition (MBR type 0x83).
 	read -r start count < <(python3 - "$img" <<'PY'
@@ -34,13 +39,14 @@ for i in range(4):
         print(*struct.unpack('<II', e[8:16]))
         break
 PY
-)
+) || true
 	[ -n "${start:-}" ] || { echo "no Linux partition in $img" >&2; exit 1; }
 	dd if="$img" of="$DL/rootfs.ext4" bs=512 skip="$start" count="$count" status=none
 
 	rm -rf "$SYSROOT" "$DL/usr-lib"
 	mkdir -p "$SYSROOT/usr/lib" "$SYSROOT/usr/include/SDL2" "$DL/usr-lib"
-	debugfs -R "rdump /usr/lib $DL/usr-lib" "$DL/rootfs.ext4" > /dev/null 2>&1
+	# debugfs splits its command on spaces: the path is quoted for it.
+	debugfs -R "rdump /usr/lib \"$DL/usr-lib\"" "$DL/rootfs.ext4" > /dev/null 2>&1
 	cp -a "$DL"/usr-lib/lib/libSDL2* "$SYSROOT/usr/lib/"
 	ls "$SYSROOT/usr/lib/libSDL2-2.0.so.0" "$SYSROOT/usr/lib/libSDL2_ttf-2.0.so.0" \
 	   "$SYSROOT/usr/lib/libSDL2_image-2.0.so.0" > /dev/null
@@ -61,7 +67,7 @@ PY
 fi
 
 # ---- the launcher ------------------------------------------------------------
-T=$(tortos_tree)
+T=$(tortos_tree) || exit 1
 echo "build: TortOS $TORTOS_VERSION + Zune, for the Pixel 2"
 # The image's SDL is built for KMS/DRM, and the Pixel's display code reads the
 # DRM handle through SDL_syswm.h - which only declares it when the config
@@ -70,7 +76,7 @@ echo "build: TortOS $TORTOS_VERSION + Zune, for the Pixel 2"
 make -C "$T" -f mk/cross.mk DEVICE=pixel2 SYSROOT="$SYSROOT" \
      CC="aarch64-linux-gnu-gcc -DSDL_VIDEO_DRIVER_KMSDRM=1" \
      VERSION="$TORTOS_VERSION" creds build/tortos.elf > "$WORK/build.log" 2>&1 ||
-	{ grep -E 'error' "$WORK/build.log" >&2; echo "build failed: see $WORK/build.log" >&2; exit 1; }
+	{ grep -E 'error' "$WORK/build.log" >&2 || true; echo "build failed: see $WORK/build.log" >&2; exit 1; }
 
 OUT=$ROOT/dist/TortOS
 mkdir -p "$OUT/fonts"

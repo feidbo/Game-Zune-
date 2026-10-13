@@ -19,7 +19,7 @@ fetch() {
 	local url=$1 sha=$2 out=$3 got
 	if [ ! -f "$out" ]; then
 		mkdir -p "$(dirname "$out")"
-		curl -sSfL -o "$out.part" "$url"
+		curl -sSfL -o "$out.part" "$url" || { rm -f "$out.part"; echo "could not download $url" >&2; exit 1; }
 		mv "$out.part" "$out"
 	fi
 	got=$(sha256sum "$out" | cut -d' ' -f1)
@@ -30,16 +30,19 @@ fetch() {
 	fi
 }
 
-# TortOS at the pinned commit with the Zune patch applied, in $WORK/tortos.
-# Reset every time, so the tree is always exactly upstream + the patch.
+# TortOS at the pinned commit with the Zune patches applied, in $WORK/tortos.
+# Reset every time, so the tree is always exactly upstream + the patches.
+# Called as T=$(tortos_tree) || exit 1: inside $( ) set -e does not stop
+# anything, so each step says for itself when it failed.
 tortos_tree() {
 	local t=$WORK/tortos
 	if [ ! -d "$t/.git" ]; then
-		git clone -q "$TORTOS_REPO" "$t"
+		git clone -q "$TORTOS_REPO" "$t" || return 1
 	fi
-	git -C "$t" fetch -q --tags origin
-	git -C "$t" checkout -q -f "$TORTOS_COMMIT"
-	git -C "$t" clean -qfdx -e build -e build-native
-	git -C "$t" apply "$ROOT"/tortos-zune/patches/*.patch
+	git -C "$t" fetch -q --tags origin || return 1
+	git -C "$t" checkout -q -f "$TORTOS_COMMIT" || return 1
+	git -C "$t" clean -qfdx -e build -e build-native || return 1
+	git -C "$t" apply "$ROOT"/tortos-zune/patches/*.patch ||
+		{ echo "the Zune patches do not apply to TortOS $TORTOS_COMMIT" >&2; return 1; }
 	echo "$t"
 }

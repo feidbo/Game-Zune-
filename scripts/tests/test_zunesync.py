@@ -6,6 +6,7 @@ checks each playlist gets the songs it should. Billboard is the real Hot 100
 archive when BILLBOARD_CSV points at a copy (it is 20 MB, so not in the
 repo); otherwise a few rows of it.
 """
+import http.client
 import json
 import os
 import shutil
@@ -13,7 +14,9 @@ import subprocess
 import sys
 import tempfile
 import unittest
+import unicodedata
 import urllib.parse
+from unittest import mock
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 import zunesync  # noqa: E402
@@ -115,6 +118,7 @@ class FakeNet(zunesync.Net):
         return True
 
 
+@unittest.skipUnless(shutil.which("ffmpeg"), "needs ffmpeg to make the test card's songs")
 class ZunesyncTest(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
@@ -235,6 +239,96 @@ class ZunesyncTest(unittest.TestCase):
         zunesync.main([self.card, "--no-listen", "--size", "10", "--only", "party"], net=self.net)
         with open(p) as f:
             self.assertNotIn(zunesync.MARK, f.read())
+
+
+class RulesTest(unittest.TestCase):
+    """The small parts, without a card or the web."""
+
+    def test_names_in_any_script_are_names(self):
+        self.assertEqual(zunesync.fold("Кино"), "кино")
+        self.assertNotEqual(zunesync.fold("宇多田ヒカル"), "")
+        self.assertNotEqual(zunesync.fold("Кино"), zunesync.fold("宇多田ヒカル"))
+        self.assertEqual(zunesync.fold("Beyoncé & Jay-Z"), "beyonce and jay z")
+
+    def test_every_rnb_spelling_is_one_tag(self):
+        keys = {zunesync.tag_key(t) for t in ("R&B", "R & B", "RnB", "Rhythm & Blues")}
+        self.assertEqual(keys, {"rnb"})
+        self.assertEqual(zunesync.tag_key("Contemporary R&B"), "contemporaryrnb")
+        self.assertEqual(zunesync.tag_key("Drum & Bass"), "drumandbass")
+
+    def test_a_tag_counts_once_and_whole(self):
+        # modern synth-pop alone is not dark wave; it needs the 80s or a dark tag
+        self.assertLess(zunesync.has({"synthpop"}, zunesync.DARKWAVE), 2.5)
+        self.assertEqual(zunesync.has({"newjackswing"}, zunesync.JAZZ), 0)
+        self.assertGreaterEqual(zunesync.has({"smoothjazz"}, zunesync.JAZZ), 1.5)
+        self.assertLess(zunesync.has({"dancepop", "electropop"}, zunesync.EURO), 2.5)
+        self.assertFalse(zunesync.any_in({"chamberpop"}, zunesync.NOT_NOSTALGIA))
+        self.assertFalse(zunesync.any_in({"newromantic"}, zunesync.NOT_NOSTALGIA))
+        self.assertTrue(zunesync.any_in({"neoclassical"}, zunesync.NOT_NOSTALGIA))
+
+    def test_a_mood_that_says_not_is_no_mood(self):
+        self.assertEqual(zunesync.mood_tag("Relaxed"), "chill")
+        self.assertEqual(zunesync.mood_tag("not relaxed"), "")
+        self.assertEqual(zunesync.mood_tag(""), "")
+
+
+class CardFilesTest(unittest.TestCase):
+    def setUp(self):
+        self.card = tempfile.mkdtemp(prefix="zunesync-files-")
+        os.makedirs(os.path.join(self.card, "Music", ".zune"))
+        os.makedirs(os.path.join(self.card, "Playlists"))
+
+    def tearDown(self):
+        shutil.rmtree(self.card, ignore_errors=True)
+
+    def write(self, rel, data, mode="w"):
+        path = os.path.join(self.card, rel)
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, mode) as f:
+            f.write(data)
+        return path
+
+    def test_device_files_with_bad_lines(self):
+        self.write("Music/.zune/plays.log", "\ufeff1700000000\ta.mp3\n\x00\x00\nnot-a-time\tb.mp3\n")
+        self.write("Music/.zune/ratings.tsv", "x.mp3\tbad\nMusic/d.mp3\t-1\nMusic/old.mp3\t1\n")
+        self.write("Playlists/liked songs.m3u8", "#EXTM3U\n# kept by the Pixel 2\n../Music/l.mp3\n")
+        plays, rating = zunesync.read_device(self.card)
+        self.assertEqual(plays, {"a.mp3": 1, "b.mp3": 1})
+        self.assertEqual(rating, {"Music/d.mp3": -1, "Music/old.mp3": 1, "Music/l.mp3": 1})
+
+    def test_playlist_lines_stay_lines(self):
+        song = {"secs": 10, "title": "Two\nLines", "artist": "Tab\tbed", "rel": "Music/a.mp3"}
+        self.assertTrue(zunesync.write_playlist(self.card, "chill", [song], False))
+        with open(os.path.join(self.card, "Playlists", "chill.m3u8"), encoding="utf-8") as f:
+            lines = f.read().splitlines()
+        self.assertEqual(lines[2:], ["#EXTINF:10,Two Lines - Tab bed", "../Music/a.mp3"])
+        self.assertEqual([f for f in os.listdir(os.path.join(self.card, "Playlists"))
+                          if f.endswith(".new")], [])
+
+    def test_fix_playlists_keeps_the_encoding_and_finds_nfd_names(self):
+        self.write("Music/Beyoncé/Album/01 Café.mp3", "")
+        nfd = unicodedata.normalize("NFD", "C:\\Users\\me\\Music\\Beyoncé\\Album\\01 Café.mp3")
+        p = self.write("Playlists/mine.m3u", ("#EXTM3U\n# Beyoncé\n" + nfd + "\n").encode("utf-8"), "wb")
+        zunesync.fix_playlists(self.card, False)
+        with open(p, encoding="utf-8") as f:
+            text = f.read()
+        self.assertIn("../Music/Beyoncé/Album/01 Café.mp3", text)
+        self.assertTrue(os.path.exists(p + ".bak"))
+        p2 = self.write("Playlists/old.m3u", "#EXTM3U\n# Beyonc\xe9\nD:\\x\\01 Café.mp3\n".encode("cp1252"), "wb")
+        zunesync.fix_playlists(self.card, False)
+        with open(p2, encoding="utf-8") as f:                 # UTF-8 now, for the device
+            text = f.read()
+        self.assertIn("# Beyoncé", text)                              # read right, not mangled
+        self.assertIn("../Music/Beyoncé/Album/01 Café.mp3", text)
+
+
+class NetTest(unittest.TestCase):
+    def test_a_broken_response_is_a_miss_not_a_crash(self):
+        net = zunesync.Net()
+        with mock.patch("urllib.request.urlopen", side_effect=http.client.IncompleteRead(b"")), \
+             mock.patch("time.sleep"):
+            self.assertIsNone(net.json("https://example.invalid/x"))
+        self.assertEqual(sum(net.failures.values()), 1)
 
 
 if __name__ == "__main__":

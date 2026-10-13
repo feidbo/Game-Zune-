@@ -15,10 +15,10 @@ set -euo pipefail
 . "$(dirname "$0")/common.sh"
 need git make cc pkg-config
 
-T=$(tortos_tree)
+T=$(tortos_tree) || exit 1
 echo "build: desktop preview"
 make -C "$T" -f mk/native.mk DEVICE=pixel2 > "$WORK/native.log" 2>&1 ||
-	{ grep error "$WORK/native.log" >&2; exit 1; }
+	{ grep error "$WORK/native.log" >&2 || true; echo "build failed: see $WORK/native.log" >&2; exit 1; }
 
 demo_card() {
 	local c=$1
@@ -61,11 +61,12 @@ demo_card() {
 	album "Boards of Canada" "Music Has the Right" "#40a0a0" 3
 	album "The Postal Service" "Give Up" "#5070e0" 3
 	album "Daft Punk" "Random Access Memories" "#c0a060" 3
-	# Two playlists, the way scripts/zunesync.py writes them, with covers.
+	# Two playlists as scripts/zunesync.py writes them (its MARK line, so a
+	# run of it on the demo card replaces them), with covers.
 	mkdir -p "$c/Playlists/.media"
-	printf '#EXTM3U\n../Music/Boards of Canada/Music Has the Right/01 - Track 1.mp3\n../Music/Radiohead/In Rainbows/02 - Track 2.mp3\n../Music/The Postal Service/Give Up/01 - Track 1.mp3\n' \
+	printf '#EXTM3U\n# made by Game Zune zunesync - rerunning it replaces this file\n../Music/Boards of Canada/Music Has the Right/01 - Track 1.mp3\n../Music/Radiohead/In Rainbows/02 - Track 2.mp3\n../Music/The Postal Service/Give Up/01 - Track 1.mp3\n' \
 		> "$c/Playlists/chill.m3u8"
-	printf '#EXTM3U\n../Music/Daft Punk/Discovery/01 - Track 1.mp3\n../Music/Daft Punk/Discovery/02 - Track 2.mp3\n../Music/Radiohead/In Rainbows/01 - Track 1.mp3\n../Music/Daft Punk/Random Access Memories/03 - Track 3.mp3\n' \
+	printf '#EXTM3U\n# made by Game Zune zunesync - rerunning it replaces this file\n../Music/Daft Punk/Discovery/01 - Track 1.mp3\n../Music/Daft Punk/Discovery/02 - Track 2.mp3\n../Music/Radiohead/In Rainbows/01 - Track 1.mp3\n../Music/Daft Punk/Random Access Memories/03 - Track 3.mp3\n' \
 		> "$c/Playlists/party.m3u8"
 	convert -size 500x500 xc:"#40a0a8" -fill white -pointsize 110 -gravity southwest \
 	        -annotate +20+20 chill "$c/Playlists/.media/chill.jpg"
@@ -110,7 +111,10 @@ else
 	C=$WORK/demo-card
 	[ -f "$C/Music/.zune/library.tsv" ] || demo_card "$C"
 fi
-# A private TortOS folder to run from, so a real card is only ever read.
+# A private TortOS folder to run from. A real card's games and music are
+# only read - except that, as on the Pixel 2, the music keeps
+# Music/.zune/ratings.tsv and Playlists/liked songs.m3u8 in step when they
+# disagree.
 RUN=$WORK/preview-root
 rm -rf "$RUN" && mkdir -p "$RUN/cards" "$RUN/fonts"
 cp "$T/config/systems.cfg" "$T/res/singles.png" "$RUN/"
@@ -127,8 +131,11 @@ shot() { # name args...
 	TORTOS_ROOT=$RUN TORTOS_CARD=$C TORTOS_ROMS=$C/Roms \
 	TORTOS_USERDATA=$WORK/preview-userdata TORTOS_SHARED=$WORK/preview-shared \
 	TORTOS_WEB=$T/res/web TORTOS_FONT=$T/res/fonts/menu.ttf SDL_AUDIODRIVER=dummy \
-		"${run[@]}" "$T/build-native/tortos" --shot "$OUT/$name.png" --theme zune "$@" \
-		2>&1 | grep wrote || true
+		${run[@]+"${run[@]}"} "$T/build-native/tortos" --shot "$OUT/$name.png" --theme zune "$@" \
+		> "$WORK/shot.log" 2>&1 || true
+	# A launcher that crashed or drew nothing says so, rather than leaving an
+	# old picture in place.
+	grep wrote "$WORK/shot.log" || { echo "shot $name failed:" >&2; tail -5 "$WORK/shot.log" >&2; exit 1; }
 }
 mkdir -p "$WORK/preview-userdata" "$WORK/preview-shared"
 # The top menu, then each side of it.

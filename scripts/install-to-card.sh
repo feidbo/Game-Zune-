@@ -15,12 +15,31 @@ MODE=${2:-install}
 DIST=$ROOT/dist/TortOS
 
 [ -n "$CARD" ] || { sed -n '2,11p' "$0" | sed 's/^# \{0,1\}//'; exit 1; }
+case "$MODE" in
+install|--restore) ;;
+*) echo "unknown option $MODE (the only one is --restore)" >&2; exit 1 ;;
+esac
 T=$CARD/TortOS
 [ -f "$T/tortos.elf" ] || { echo "no TortOS/tortos.elf on $CARD - is that the TORTOS drive?" >&2; exit 1; }
+card_version=$(cat "$T/VERSION" 2>/dev/null || echo unknown)
+
+# Copied beside, then renamed into place: a card pulled halfway through never
+# holds half a launcher.
+put() { # from to
+	cp "$1" "$2.new"
+	mv -f "$2.new" "$2"
+}
 
 if [ "$MODE" = --restore ]; then
 	[ -f "$T/tortos.elf.stock" ] || { echo "no tortos.elf.stock to restore" >&2; exit 1; }
-	cp "$T/tortos.elf.stock" "$T/tortos.elf"
+	stock_version=$(cat "$T/tortos.elf.stock.version" 2>/dev/null || echo "$card_version")
+	if [ "$stock_version" != "$card_version" ]; then
+		echo "the saved stock launcher is from TortOS $stock_version, and this card now has" >&2
+		echo "$card_version. Putting it back would mix the two; reinstall TortOS $card_version" >&2
+		echo "instead, which brings its own launcher." >&2
+		exit 1
+	fi
+	put "$T/tortos.elf.stock" "$T/tortos.elf"
 	sync
 	echo "restored the stock launcher. (The Zune fonts in TortOS/fonts are harmless to leave.)"
 	exit 0
@@ -28,7 +47,7 @@ fi
 
 [ -f "$DIST/tortos.elf" ] || { echo "no build in dist/ - run scripts/build-pixel2.sh" >&2; exit 1; }
 want=$(cat "$DIST/ZUNE_FOR_VERSION")
-have=$(cat "$T/VERSION" 2>/dev/null || echo unknown)
+have=$card_version
 if [ "$have" != "$want" ]; then
 	echo "this card has TortOS $have, and this build is for $want." >&2
 	echo "the launcher talks to the emulator and the music player beside it, so" >&2
@@ -38,15 +57,24 @@ if [ "$have" != "$want" ]; then
 fi
 
 # Back up the stock launcher once. Never over an existing backup: running this
-# twice must not replace the real stock file with the Zune one.
-[ -f "$T/tortos.elf.stock" ] || cp "$T/tortos.elf" "$T/tortos.elf.stock"
+# twice must not replace the real stock file with the Zune one - and never a
+# Zune launcher as "stock", if the backup was deleted after an install.
+if [ ! -f "$T/tortos.elf.stock" ]; then
+	if grep -aq zune-wallpaper.jpg "$T/tortos.elf"; then
+		echo "the launcher on the card is already a Zune one, and there is no stock" >&2
+		echo "backup to keep. Installing over it; to go back to stock later, reinstall" >&2
+		echo "TortOS $want." >&2
+	else
+		put "$T/tortos.elf" "$T/tortos.elf.stock"
+		echo "$card_version" > "$T/tortos.elf.stock.version"
+	fi
+fi
 mkdir -p "$T/fonts"
 cp "$DIST"/fonts/* "$T/fonts/"
 # The theme's own background. Yours, if you add one, is TortOS/wallpaper.jpg
 # (or .png) and is never touched here.
-cp "$DIST/zune-wallpaper.jpg" "$T/"
-cp "$DIST/tortos.elf" "$T/tortos.elf.new"
-mv -f "$T/tortos.elf.new" "$T/tortos.elf"
+put "$DIST/zune-wallpaper.jpg" "$T/zune-wallpaper.jpg"
+put "$DIST/tortos.elf" "$T/tortos.elf"
 sync
 echo "installed. Eject the card, put it in the Pixel 2 and power on."
 echo "If the theme is not Zune already: MENU > UI Theme > Zune."

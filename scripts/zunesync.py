@@ -67,7 +67,7 @@ Needs: pip install mutagen pillow   (librosa optional; ffmpeg for m4a/opus)
 import argparse
 import csv
 import datetime as dt
-import hashlib
+import http.client
 import io
 import json
 import math
@@ -84,6 +84,7 @@ import urllib.request
 AUDIO = {".mp3", ".m4a", ".m4b", ".mp4", ".aac", ".flac", ".ogg", ".oga", ".opus", ".wav"}
 MARK = "# made by Game Zune zunesync - rerunning it replaces this file"
 OLD_MARKS = ("# made by Game Zune moodlists",)
+LIKED = "liked songs"     # the Pixel 2's own playlist: never written here
 HERE = os.path.dirname(os.path.abspath(__file__))
 FONT = os.path.join(HERE, "..", "tortos-zune", "fonts", "zune-light.ttf")
 UA = "GameZune/1.0 ( https://github.com/feidbo/Game-Zune- )"
@@ -104,10 +105,12 @@ COLORS = {
 # ---- names ---------------------------------------------------------------------
 
 def fold(s):
-    """Lowercase, accents off, punctuation to spaces: for comparing names."""
-    s = unicodedata.normalize("NFKD", s or "").encode("ascii", "ignore").decode()
-    s = s.lower().replace("&", " and ")
-    s = re.sub(r"[^a-z0-9]+", " ", s)
+    """Lowercase, accents off, punctuation to spaces: for comparing names.
+    Letters of every script are kept - "Кино" and "宇多田ヒカル" are names
+    too, not the empty string."""
+    s = unicodedata.normalize("NFKD", s or "")
+    s = "".join(c for c in s if not unicodedata.combining(c)).casefold().replace("&", " and ")
+    s = re.sub(r"[\W_]+", " ", s)
     return re.sub(r"\s+", " ", s).strip()
 
 
@@ -134,9 +137,11 @@ def main_artist(a):
 
 
 def tag_key(t):
-    """One spelling for a tag: "Synth-Pop", "synth pop" and "synthpop" agree."""
-    return re.sub(r"[^a-z0-9&]+", "", (t or "").lower().replace("rhythm and blues", "rnb")
-                  .replace("r&b", "rnb"))
+    """One spelling for a tag: "Synth-Pop", "synth pop" and "synthpop" agree,
+    and so do "R&B", "R & B", "RnB" and "Rhythm & Blues"."""
+    k = re.sub(r"[\W_]+", "", (t or "").casefold().replace("&", "and"))
+    k = k.replace("rhythmandblues", "rnb")
+    return re.sub(r"(^|contemporary|alternative)randb", r"\1rnb", k)
 
 
 def tagset(tags):
@@ -204,28 +209,43 @@ def read_tags(rel, full):
     return out
 
 
-def read_device(card):
-    """Plays and ratings the Pixel 2 kept."""
-    plays, last, rating = {}, {}, {}
-    z = os.path.join(card, "Music", ".zune")
+def _device_lines(path):
+    """A file the Pixel 2 writes, line by line - a power cut can leave NULs
+    or half a line, and those are skipped, not fatal."""
     try:
-        with open(os.path.join(z, "plays.log"), encoding="utf-8", errors="replace") as f:
+        with open(path, encoding="utf-8", errors="replace") as f:
             for line in f:
-                t, _, path = line.rstrip("\r\n").partition("\t")
-                if path:
-                    plays[path] = plays.get(path, 0) + 1
-                    last[path] = max(last.get(path, 0), int(t or 0))
+                line = line.replace("\x00", "").lstrip("\ufeff").rstrip("\r\n")
+                if line:
+                    yield line
     except OSError:
-        pass
-    try:
-        with open(os.path.join(z, "ratings.tsv"), encoding="utf-8", errors="replace") as f:
-            for line in f:
-                path, _, v = line.rstrip("\r\n").partition("\t")
-                if path and v.strip():
-                    rating[path] = 1 if int(v) > 0 else -1 if int(v) < 0 else 0
-    except (OSError, ValueError):
-        pass
-    return plays, last, rating
+        return
+
+
+def read_device(card):
+    """Plays and ratings the Pixel 2 kept: path -> listens, and path -> 1
+    liked (on its liked songs playlist) or -1 disliked (ratings.tsv)."""
+    plays, rating = {}, {}
+    z = os.path.join(card, "Music", ".zune")
+    for line in _device_lines(os.path.join(z, "plays.log")):
+        _, _, path = line.partition("\t")
+        if path:
+            plays[path] = plays.get(path, 0) + 1
+    for line in _device_lines(os.path.join(z, "ratings.tsv")):
+        path, _, v = line.partition("\t")
+        try:
+            v = int(v)
+        except ValueError:
+            continue
+        if path and v:
+            rating[path] = 1 if v > 0 else -1
+    pdir = os.path.join(card, "Playlists")
+    for line in _device_lines(os.path.join(pdir, LIKED + ".m3u8")):
+        if line.startswith("#"):
+            continue
+        rel = os.path.relpath(os.path.normpath(os.path.join(pdir, line.strip())), card)
+        rating[rel.replace(os.sep, "/")] = 1      # on the playlist is liked
+    return plays, rating
 
 
 # ---- the web -------------------------------------------------------------------
@@ -268,7 +288,8 @@ class Net:
                     return None
                 self.failures[host] = self.failures.get(host, 0) + 1
                 return None
-            except (urllib.error.URLError, TimeoutError, ValueError, OSError):
+            except (urllib.error.URLError, http.client.HTTPException, TimeoutError, ValueError,
+                    OSError):
                 if attempt < 2:
                     time.sleep(1 + attempt)
                     continue
@@ -289,7 +310,11 @@ class Net:
                     f.write(b)
             os.replace(out + ".part", out)
             return True
-        except (urllib.error.URLError, OSError):
+        except (urllib.error.URLError, http.client.HTTPException, OSError):
+            try:
+                os.remove(out + ".part")
+            except OSError:
+                pass
             return False
 
 
@@ -399,13 +424,20 @@ def lookup_deezer(net, cache, key, t):
         if clean_title(d.get("title", "")) == want_t and \
            main_artist((d.get("artist") or {}).get("name", "")) == want_a:
             out["rank"] = int(d.get("rank") or 0)
-            tr = net.json("https://api.deezer.com/track/%s" % d["id"], gap=0.15) or {}
+            tr = net.json("https://api.deezer.com/track/%s" % d["id"], gap=0.15)
+            if tr is None or "error" in tr:
+                return None        # asked again next run, not remembered as "no tempo"
             out["bpm"] = int(round(float(tr.get("bpm") or 0)))
             m = re.match(r"(\d{4})", tr.get("release_date") or "")
             out["year"] = int(m.group(1)) if m else 0
             break
     cache["dz"][key] = out
     return out
+
+
+def _listify(v):
+    """Last.fm sends a lone item as an object, not a list of one."""
+    return [v] if isinstance(v, dict) else [x for x in (v or []) if isinstance(x, dict)]
 
 
 def lookup_lastfm(net, cache, key, t, api_key):
@@ -419,7 +451,7 @@ def lookup_lastfm(net, cache, key, t, api_key):
         "autocorrect": 1, "api_key": api_key, "format": "json"}, gap=0.25)
     if res is None or "error" in res:
         return None
-    tags = [x["name"] for x in ((res.get("toptags") or {}).get("tag") or [])
+    tags = [x["name"] for x in _listify((res.get("toptags") or {}).get("tag"))
             if int(x.get("count", 0)) >= 8][:15]
     cache["lf"][key] = tags
     return tags
@@ -434,7 +466,7 @@ def lastfm_user_plays(net, api_key, user):
         res = net.json("https://ws.audioscrobbler.com/2.0/", {
             "method": "user.gettoptracks", "user": user, "period": "overall", "limit": 1000,
             "page": page, "api_key": api_key, "format": "json"}, gap=0.25)
-        tracks = ((res or {}).get("toptracks") or {}).get("track") or []
+        tracks = _listify(((res or {}).get("toptracks") or {}).get("track"))
         for tr in tracks:
             k = (main_artist((tr.get("artist") or {}).get("name", "")), clean_title(tr.get("name", "")))
             out[k] = out.get(k, 0) + int(tr.get("playcount") or 0)
@@ -444,13 +476,15 @@ def lastfm_user_plays(net, api_key, user):
     return out
 
 
-def billboard(net, zdir):
+def billboard(net, zdir, dry=False):
     """(main artist, title) -> (best peak, weeks on chart), from the Hot 100."""
     path = os.path.join(zdir, "hot100.csv")
     fresh = os.path.exists(path) and time.time() - os.path.getmtime(path) < 30 * 86400
-    if not fresh and not net.download(BILLBOARD_URL, path) and not os.path.exists(path):
+    if not fresh and (dry or not net.download(BILLBOARD_URL, path)) and not os.path.exists(path):
         return {}
-    out = {}
+    # Each song is on the chart for weeks: its best, once, before the names
+    # are folded - a few tens of thousands of songs, not every chart row.
+    best = {}
     with open(path, encoding="utf-8", errors="replace", newline="") as f:
         for row in csv.DictReader(f):
             try:
@@ -458,10 +492,15 @@ def billboard(net, zdir):
                 weeks = int(row.get("wks_on_chart") or 0)
             except ValueError:
                 continue
-            a = main_artist(row.get("performer", ""))
-            for k in {(a, clean_title(row.get("title", ""))), (a, bare_title(row.get("title", "")))}:
-                p, w = out.get(k, (101, 0))
-                out[k] = (min(p, peak), max(w, weeks))
+            raw = (row.get("performer", ""), row.get("title", ""))
+            p, w = best.get(raw, (101, 0))
+            best[raw] = (min(p, peak), max(w, weeks))
+    out = {}
+    for (performer, title), (peak, weeks) in best.items():
+        a = main_artist(performer)
+        for k in {(a, clean_title(title)), (a, bare_title(title))}:
+            p, w = out.get(k, (101, 0))
+            out[k] = (min(p, peak), max(w, weeks))
     return out
 
 
@@ -488,51 +527,83 @@ def listen(full, secs):
 
 # ---- the playlists ---------------------------------------------------------------
 
-def has(T, words):
-    """How strongly a song's tags say `words`: each word's weight, once, for
-    a tag that is it or (for words of four letters or more) contains it -
-    so "jazz" counts "smoothjazz" and "goth" counts "gothicrock"."""
-    s = 0.0
+# Words a tag may contain and still mean them: "smoothjazz" is jazz and
+# "gothicrock" is goth. Anything else must be the whole tag, or "swing" would
+# find "newjackswing" and "romantic" "newromantic".
+STEMS = {"jazz", "goth", "metal", "punk", "techno", "trance", "classical", "orchestral",
+         "eurodance", "europop", "eurobeat", "ambient", "hiphop"}
+
+
+def _matches(k, t):
+    return k == t or (k in STEMS and k in t)
+
+
+def weights(words):
+    """A rule's words as tag keys, each once at its highest weight - so
+    "synthpop" and "synth-pop" are one word, counted once."""
+    out = {}
     for w, wt in words.items():
         k = tag_key(w)
-        if any(k == t or (len(k) >= 4 and k in t) for t in T):
-            s += wt
-    return s
+        out[k] = max(out.get(k, 0), wt)
+    return out
+
+
+def has(T, words):
+    """How strongly a song's tags say `words` (from weights()): each word's
+    weight, once."""
+    return sum(wt for k, wt in words.items() if any(_matches(k, t) for t in T))
 
 
 def any_in(T, words):
-    """Whether any tag is, or contains, one of `words` (already tag keys)."""
-    return any(w == t or (len(w) >= 4 and w in t) for t in T for w in words)
+    """Whether any tag is one of `words` (tag keys), or holds one of the stems."""
+    return any(_matches(w, t) for t in T for w in words)
 
 
-CHILL = {"chill": 1.5, "chillout": 1.5, "mellow": 1.5, "downtempo": 1.2, "ambient": 1, "acoustic": 1,
+CHILL = weights({"chill": 1.5, "chillout": 1.5, "mellow": 1.5, "downtempo": 1.2, "ambient": 1, "acoustic": 1,
          "lo-fi": 1.2, "lofi": 1.2, "dream pop": 1, "soft rock": 1, "folk": 0.7, "indie folk": 1,
          "chamber pop": 0.7, "singer-songwriter": 0.7, "easy listening": 1, "calm": 1.2,
          "relaxing": 1.2, "relax": 1.2, "soft": 1, "sleep": 1, "slowcore": 1, "trip hop": 0.8,
-         "bossa nova": 0.8, "chillwave": 1.2, "beautiful": 0.5, "peaceful": 1.2}
+         "bossa nova": 0.8, "chillwave": 1.2, "beautiful": 0.5, "peaceful": 1.2})
 NOT_CHILL = {"rnb", "contemporaryrnb", "alternativernb", "neosoul", "quietstorm", "slowjams",
              "slowjam", "sexy", "sensual", "newjackswing", "trapsoul", "hiphop", "rap", "trap",
              "metal", "heavymetal", "hardrock", "punk", "hardcore", "edm", "techno", "drumandbass",
              "dubstep", "eurodance", "house", "party", "workout"}
-WORKOUT = {"workout": 2, "gym": 2, "running": 1.5, "energetic": 1.5, "pump up": 1.5, "edm": 1,
+WORKOUT = weights({"workout": 2, "gym": 2, "running": 1.5, "energetic": 1.5, "pump up": 1.5, "edm": 1,
            "drum and bass": 1, "hard rock": 0.8, "metal": 0.8, "hip hop": 0.6, "trap": 0.8,
-           "house": 0.6, "techno": 0.8, "dubstep": 1, "punk": 0.8, "electro": 0.6}
-DARKWAVE = {"darkwave": 3, "dark wave": 3, "coldwave": 3, "cold wave": 3, "minimal wave": 3,
+           "house": 0.6, "techno": 0.8, "dubstep": 1, "punk": 0.8, "electro": 0.6})
+DARKWAVE = weights({"darkwave": 3, "dark wave": 3, "coldwave": 3, "cold wave": 3, "minimal wave": 3,
             "minimal synth": 3, "ethereal wave": 2.5, "synthpop": 2, "synth-pop": 2,
             "new wave": 2, "post-punk": 2, "gothic rock": 2, "goth": 1.5, "new romantic": 2,
             "futurepop": 1.5, "ebm": 1.5, "electropop": 0.8, "synthwave": 0.8, "industrial": 0.7,
-            "80s": 1, "1980s": 1}
+            "80s": 1, "1980s": 1})
 NOT_NOSTALGIA = {"classical", "instrumental", "orchestral", "baroque", "opera", "contemporaryclassical",
                  "modernclassical", "romantic", "chamber", "score", "filmscore", "neoclassical"}
-JAZZ = {"jazz": 2, "bebop": 2, "bop": 1.5, "hard bop": 2, "swing": 1.5, "big band": 2,
+JAZZ = weights({"jazz": 2, "bebop": 2, "bop": 1.5, "hard bop": 2, "swing": 1.5, "big band": 2,
         "bossa nova": 1.5, "cool jazz": 2, "vocal jazz": 2, "smooth jazz": 2, "acid jazz": 2,
         "nu jazz": 2, "jazz fusion": 2, "latin jazz": 2, "free jazz": 2, "post-bop": 2,
-        "modal jazz": 2, "jazz funk": 2, "soul jazz": 2, "lounge": 0.7}
-EURO = {"eurodance": 3, "euro dance": 3, "europop": 3, "euro pop": 3, "euro-pop": 3,
+        "modal jazz": 2, "jazz funk": 2, "soul jazz": 2, "lounge": 0.7})
+EURO = weights({"eurodance": 3, "euro dance": 3, "europop": 3, "euro pop": 3, "euro-pop": 3,
         "euro house": 3, "eurohouse": 3, "eurobeat": 3, "euro disco": 2.5, "eurodisco": 2.5,
         "italo dance": 3, "italo disco": 2.5, "hands up": 3, "eurotrance": 2.5, "euro trance": 2.5,
-        "bubblegum dance": 3, "dance-pop": 1, "dance pop": 1, "dance": 0.7, "electropop": 0.5,
-        "disco": 0.5, "party": 0.7, "trance": 0.5}
+        "bubblegum dance": 3, "dance-pop": 1, "electropop": 0.5, "disco": 0.5, "trance": 0.5})
+
+
+MOODS = {"chill": ("chill", "calm", "relax", "mellow"), "workout": ("workout", "gym", "energetic"),
+         "party": ("party", "dance"), "jazzy": ("jazz",)}
+
+
+def mood_tag(mood):
+    """The playlist a MOOD tag names, if any: "Relaxed" is chill, and "not
+    relaxed" is nothing."""
+    words = fold(mood).split()
+    if not words or words[0] in ("not", "no", "non", "un"):
+        return ""
+    m = " ".join(words)
+    return next((p for p, ws in MOODS.items() if any(w in m for w in ws)), "")
+
+
+# What makes a song from after the 80s dark wave and not just synth-pop.
+DARK_CORE = weights({"darkwave": 1, "coldwave": 1, "minimal wave": 1, "minimal synth": 1, "post-punk": 1})
 
 
 def build(songs, size, rng):
@@ -592,8 +663,7 @@ def build(songs, size, rng):
             continue
         if 1978 <= y <= 1992:
             sc += 1.5
-        elif y >= 1996 and not has(s["tags"], {"darkwave": 1, "coldwave": 1, "minimal wave": 1,
-                                                "minimal synth": 1, "post-punk": 1}):
+        elif y >= 1996 and not has(s["tags"], DARK_CORE):
             sc -= 1.0
         if sc >= 2.5:
             cand.append((sc, s))
@@ -648,14 +718,32 @@ def build(songs, size, rng):
 
     # discover: least played, least known
     heavy = {id(s) for s in out["heavy rotation"]}
-    cand = [(0.55 * (1 - pct(s["pop"], pops)) + 0.45 * (1 - pct(s["plays"], plays)) +
-             rng.random() * 0.1, s) for s in pool if id(s) not in heavy]
+    cand = [(0.55 * (1 - pct(s["pop"], pops) if s["pop"] is not None else 0.55) +
+             0.45 * (1 - pct(s["plays"], plays)) + rng.random() * 0.1, s)
+            for s in pool if id(s) not in heavy]
     out["discover"] = [s for _, s in sorted(cand, key=lambda x: -x[0])[:size]]
     rng.shuffle(out["discover"])
     return out
 
 
 # ---- writing ---------------------------------------------------------------------
+
+def write_atomic(path, text):
+    """All of `text` at `path`, or the old file untouched: written beside
+    it, then renamed over it, so a pulled card never holds half a file."""
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    tmp = path + ".new"
+    with open(tmp, "w", encoding="utf-8", newline="\n") as f:
+        f.write(text)
+        f.flush()
+        os.fsync(f.fileno())
+    os.replace(tmp, path)
+
+
+def one_line(v):
+    """A value for one line of a file the Pixel 2 reads line by line."""
+    return re.sub(r"[\t\r\n]+", " ", str(v))
+
 
 def ours(path):
     try:
@@ -674,12 +762,10 @@ def write_playlist(card, name, songs, dry):
         return False
     lines = ["#EXTM3U", MARK]
     for s in songs:
-        lines.append("#EXTINF:%d,%s - %s" % (s["secs"] or -1, s["title"], s["artist"]))
+        lines.append("#EXTINF:%d,%s - %s" % (s["secs"] or -1, one_line(s["title"]), one_line(s["artist"])))
         lines.append("../" + s["rel"])
     if not dry:
-        os.makedirs(pdir, exist_ok=True)
-        with open(path, "w", encoding="utf-8", newline="\n") as f:
-            f.write("\n".join(lines) + "\n")
+        write_atomic(path, "\n".join(lines) + "\n")
     return True
 
 
@@ -755,18 +841,17 @@ def write_cover(card, name, songs, color, dry):
             break
         pt -= 8
     draw.text((24, size - 40 - pt), name, font=font, fill=(255, 255, 255))
-    out = os.path.join(card, "Playlists", ".media")
-    os.makedirs(out, exist_ok=True)
-    img.save(os.path.join(out, name + ".jpg"), quality=90)
+    out = os.path.join(card, "Playlists", ".media", name + ".jpg")
+    os.makedirs(os.path.dirname(out), exist_ok=True)
+    img.save(out + ".new", "JPEG", quality=90)
+    os.replace(out + ".new", out)
 
 
 def write_index(card, songs, dry):
     """Music/.zune/library.tsv, for the Pixel 2."""
     rows = ["#zune-index 1\tpath\ttitle\tartist\talbum\tgenre\tyear\tseconds\ttrack\tbpm\ttags"]
 
-    def cell(v):
-        return str(v).replace("\t", " ").replace("\n", " ").replace("\r", " ")
-
+    cell = one_line
     for s in songs:
         genre = s["genre"] or (s["tag_names"][0].title() if s["tag_names"] else "")
         rows.append("\t".join(cell(v) for v in (
@@ -774,11 +859,23 @@ def write_index(card, songs, dry):
             s["secs"] or "", s["num"] or "", s["bpm"] or "", ",".join(s["tag_names"][:10]))))
     if dry:
         return
-    z = os.path.join(card, "Music", ".zune")
-    os.makedirs(z, exist_ok=True)
-    with open(os.path.join(z, "library.tsv.new"), "w", encoding="utf-8", newline="\n") as f:
-        f.write("\n".join(rows) + "\n")
-    os.replace(os.path.join(z, "library.tsv.new"), os.path.join(z, "library.tsv"))
+    write_atomic(os.path.join(card, "Music", ".zune", "library.tsv"), "\n".join(rows) + "\n")
+
+
+def _read_playlist(path):
+    """A playlist's text: UTF-8 as .m3u8 promises, else the Windows code page
+    an .m3u from iTunes or Winamp is often in. It is written back as UTF-8,
+    which is what the Pixel 2 matches against the card's file names."""
+    with open(path, "rb") as f:
+        raw = f.read()
+    try:
+        return raw.decode("utf-8-sig")
+    except UnicodeDecodeError:
+        return raw.decode("cp1252", errors="replace")
+
+
+def _nfc(s):
+    return unicodedata.normalize("NFC", s).lower()
 
 
 def fix_playlists(card, dry):
@@ -789,29 +886,34 @@ def fix_playlists(card, dry):
         return
     by_name = {}
     for rel, _ in songs_on(card):
-        by_name.setdefault(os.path.basename(rel).lower(), []).append(rel)
+        by_name.setdefault(_nfc(os.path.basename(rel)), []).append(rel)
     for f in sorted(os.listdir(pdir)):
         path = os.path.join(pdir, f)
         if os.path.splitext(f)[1].lower() not in (".m3u", ".m3u8") or ours(path):
             continue
-        with open(path, encoding="utf-8-sig", errors="replace") as fh:
-            lines = fh.read().splitlines()
+        text = _read_playlist(path)
         changed = missing = 0
         out = []
-        for line in lines:
+        for line in text.splitlines():
             s = line.strip()
             if not s or s.startswith("#"):
                 out.append(line)
                 continue
+            if s.lower().startswith("file://"):
+                s = urllib.parse.unquote(urllib.parse.urlparse(s).path)
             norm = s.replace("\\", "/")
             here = norm if os.path.isabs(norm) else os.path.normpath(os.path.join(pdir, norm))
-            if os.path.isfile(here):
+            # Kept only when it is a song on the card: a path that works on
+            # this computer still points at nothing on the Pixel 2.
+            on_card = os.path.isfile(here) and \
+                os.path.commonpath([os.path.abspath(here), card]) == card
+            if on_card:
                 out.append(line)
                 continue
             parts = norm.split("/")
-            cands = by_name.get(parts[-1].lower(), [])
+            cands = by_name.get(_nfc(parts[-1]), [])
             if len(cands) > 1 and len(parts) > 1:
-                cands = [c for c in cands if c.split("/")[-2].lower() == parts[-2].lower()] or cands
+                cands = [c for c in cands if _nfc(c.split("/")[-2]) == _nfc(parts[-2])] or cands
             if cands:
                 out.append("../" + cands[0])
                 changed += 1
@@ -820,9 +922,9 @@ def fix_playlists(card, dry):
                 missing += 1
         print("  %-24s %d fixed, %d not on the card" % (f, changed, missing))
         if changed and not dry:
-            os.replace(path, path + ".bak")
-            with open(path, "w", encoding="utf-8", newline="\n") as fh:
-                fh.write("\n".join(out) + "\n")
+            with open(path, "rb") as src, open(path + ".bak", "wb") as bak:
+                bak.write(src.read())
+            write_atomic(path, "\n".join(out) + "\n")
 
 
 # ---- main -------------------------------------------------------------------------
@@ -831,7 +933,7 @@ def load_cache(path):
     try:
         with open(path, encoding="utf-8") as f:
             c = json.load(f)
-        if c.get("version") == CACHE_VERSION:
+        if isinstance(c, dict) and c.get("version") == CACHE_VERSION:
             for k in ("mb", "mb_artist", "lb", "dz", "lf", "audio"):
                 c.setdefault(k, {})
             return c
@@ -843,24 +945,42 @@ def load_cache(path):
 def save_cache(path, cache, dry):
     if dry:
         return
-    os.makedirs(os.path.dirname(path), exist_ok=True)
-    with open(path + ".new", "w", encoding="utf-8") as f:
-        json.dump(cache, f)
-    os.replace(path + ".new", path)
+    write_atomic(path, json.dumps(cache))
+
+
+def look_up_all(net, cache, cache_path, files, songs, a, t0):
+    """Every song's facts, from the cache or the web, saved every 25."""
+    for i, (rel, full) in enumerate(files):
+        t = read_tags(rel, full)
+        key = "%s\t%s" % (main_artist(t["artist"]), clean_title(t["title"]))
+        if key == "\t":
+            key = "file\t" + rel      # no name to look up by: never share an entry
+        mb = lookup_musicbrainz(net, cache, key, t) or {}
+        art = lookup_mb_artist(net, cache, mb.get("artist_id", ""))
+        dz = lookup_deezer(net, cache, key, t) or {}
+        lf = lookup_lastfm(net, cache, key, t, a.lastfm_key) or []
+        songs.append(dict(rel=rel, full=full, key=key, t=t, mb=mb, art=art, dz=dz, lf=lf))
+        if (i + 1) % 25 == 0 or i + 1 == len(files):
+            el = time.time() - t0
+            print("  looked up %d of %d (%.0fs)" % (i + 1, len(files), el))
+            save_cache(cache_path, cache, a.dry_run)
 
 
 def main(argv=None, net=None):
     ap = argparse.ArgumentParser(description="Auto playlists and the library index for a TortOS card.")
     ap.add_argument("card", help="the TORTOS drive, e.g. /Volumes/TORTOS or E:\\")
-    ap.add_argument("--lastfm-key", default=os.environ.get("LASTFM_API_KEY", ""))
-    ap.add_argument("--lastfm-user", default=os.environ.get("LASTFM_USER", ""))
-    ap.add_argument("--offline", action="store_true")
-    ap.add_argument("--no-listen", action="store_true")
-    ap.add_argument("--size", type=int, default=50)
-    ap.add_argument("--only", default=",".join(PLAYLISTS))
-    ap.add_argument("--fix-playlists", action="store_true")
-    ap.add_argument("--no-covers", action="store_true")
-    ap.add_argument("--dry-run", action="store_true")
+    ap.add_argument("--lastfm-key", default=os.environ.get("LASTFM_API_KEY", ""),
+                    help="a free Last.fm API key, for mood tags (or LASTFM_API_KEY)")
+    ap.add_argument("--lastfm-user", default=os.environ.get("LASTFM_USER", ""),
+                    help="your Last.fm name, for your play counts (or LASTFM_USER)")
+    ap.add_argument("--offline", action="store_true", help="use the cache only, no web")
+    ap.add_argument("--no-listen", action="store_true", help="never analyse audio for tempo")
+    ap.add_argument("--size", type=int, default=50, help="songs per playlist (default 50)")
+    ap.add_argument("--only", default=",".join(PLAYLISTS), help="just these, comma-separated")
+    ap.add_argument("--fix-playlists", action="store_true",
+                    help="repoint your own playlists at the card's copies of their songs")
+    ap.add_argument("--no-covers", action="store_true", help="leave the playlist covers alone")
+    ap.add_argument("--dry-run", action="store_true", help="show what would change, write nothing")
     a = ap.parse_args(argv)
 
     card = os.path.abspath(a.card)
@@ -881,26 +1001,21 @@ def main(argv=None, net=None):
 
     files = list(songs_on(card))
     print("%d songs on the card" % len(files))
-    plays, last, rating = read_device(card)
-    print("from the Pixel 2: %d songs played, %d rated" % (len(plays), len(rating)))
+    plays, rating = read_device(card)
+    print("from the Pixel 2: %d songs played, %d liked, %d disliked" % (
+        len(plays), sum(v > 0 for v in rating.values()), sum(v < 0 for v in rating.values())))
 
     songs = []
     t0 = time.time()
-    for i, (rel, full) in enumerate(files):
-        t = read_tags(rel, full)
-        key = "%s\t%s" % (main_artist(t["artist"]), clean_title(t["title"]))
-        mb = lookup_musicbrainz(net, cache, key, t) or {}
-        art = lookup_mb_artist(net, cache, mb.get("artist_id", ""))
-        dz = lookup_deezer(net, cache, key, t) or {}
-        lf = lookup_lastfm(net, cache, key, t, a.lastfm_key) or []
-        songs.append(dict(rel=rel, full=full, key=key, t=t, mb=mb, art=art, dz=dz, lf=lf))
-        if (i + 1) % 25 == 0 or i + 1 == len(files):
-            el = time.time() - t0
-            print("  looked up %d of %d (%.0fs)" % (i + 1, len(files), el))
-            save_cache(cache_path, cache, a.dry_run)
+    try:
+        look_up_all(net, cache, cache_path, files, songs, a, t0)
+    except KeyboardInterrupt:
+        save_cache(cache_path, cache, a.dry_run)
+        sys.exit("\nstopped - what was looked up is saved, and the next run carries on from there")
     lookup_listenbrainz(net, cache, [s["mb"].get("id", "") for s in songs])
 
-    hot = billboard(net, zdir) if not a.dry_run or os.path.exists(os.path.join(zdir, "hot100.csv")) else {}
+
+    hot = billboard(net, zdir, a.dry_run)
     print("billboard: %s" % ("%d charted songs known" % len(hot) if hot else "not available"))
     lfu = lastfm_user_plays(net, a.lastfm_key, a.lastfm_user)
 
@@ -949,11 +1064,7 @@ def main(argv=None, net=None):
         s["plays"] = plays.get(s["rel"], 0)
         s["lf_plays"] = lfu.get(a_t, 0)
         s["rating"] = rating.get(s["rel"], 0)
-        mood = fold(t["mood"])
-        s["mood_tag"] = next((p for p, words in {
-            "chill": ("chill", "calm", "relax", "mellow"), "workout": ("workout", "gym", "energetic"),
-            "party": ("party", "dance"), "jazzy": ("jazz",)}.items()
-            if any(w in mood for w in words)), "")
+        s["mood_tag"] = mood_tag(t["mood"])
     if listened:
         print("listened to %d songs for their tempo" % listened)
     save_cache(cache_path, cache, a.dry_run)
@@ -976,7 +1087,7 @@ def main(argv=None, net=None):
             if not a.no_covers:
                 write_cover(card, name, chosen, COLORS[name], a.dry_run)
             print("  %-15s %d songs" % (name, len(chosen)))
-    print("done. On the Pixel 2: music, then right to the playlists pivot.")
+    print("done. On the Pixel 2: zune, then playlists.")
     return lists
 
 
