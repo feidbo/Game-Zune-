@@ -15,6 +15,7 @@ import urllib.request
 import zipfile
 
 from .card import safe_name
+from .match import loose, similar
 
 # name, folder, extensions - what systems.cfg says for the three Game Boys,
 # for a card that has no systems.cfg to read.
@@ -29,6 +30,12 @@ THUMB_REPOS = {
     "Game Boy Color": "Nintendo_-_Game_Boy_Color",
     "Game Boy Advance": "Nintendo_-_Game_Boy_Advance",
 }
+# Where else a game may be filed: libretro puts a cartridge that plays on
+# both under one system, not always the one its file says.
+SIBLINGS = {"Game Boy": ("Game Boy Color",), "Game Boy Color": ("Game Boy",),
+            "Game Boy Advance": ()}
+CLOSE = 0.8              # how alike a title must be for the broad search
+REGIONS = ("usa", "world", "europe", "japan")   # preferred art, in order
 THUMB_URL = "https://raw.githubusercontent.com/libretro-thumbnails/%s/master/Named_Boxarts/%s.png"
 # Every name a system's art is under, for a game not filed under its own:
 # libretro's server lists them; GitHub's API too, sixty asks an hour.
@@ -198,6 +205,32 @@ def best_match(rom, names):
     return best
 
 
+def close_match(rom, names):
+    """The broader search, for a game best_match did not find: the name in
+    `names` whose title is most like this game's - "Pokemon Red.gb" finds
+    "Pokemon - Red Version (USA, Europe)", "Legend of Zelda, The - Link's
+    Awakening DX" finds "The Legend of Zelda - Link's Awakening DX", "Pokemon
+    Yellow" "Pokemon - Yellow Version - Special Pikachu Edition" - with
+    the USA's art, then the world's, Europe's, Japan's, when several are."""
+    title, tags = _tags(thumb_names(rom)[0])
+    want = loose(title, music=False)
+    best, key = None, None
+    for n in names:
+        t, ntags = _tags(n)
+        # The whole title, and without its last subtitles: "Pokemon Yellow"
+        # is "Pokemon - Yellow Version - Special Pikachu Edition".
+        parts = t.split(" - ")
+        sc = max(similar(want, loose(" - ".join(parts[:k]), music=False))
+                 for k in range(len(parts), 0, -1))
+        if sc < CLOSE:
+            continue
+        region = min([REGIONS.index(r) for r in ntags if r in REGIONS] or [len(REGIONS)])
+        k = (round(sc, 3), len(tags & ntags), -region, -len(ntags))
+        if key is None or k > key:
+            best, key = n, k
+    return best
+
+
 _index_cache = {}
 
 
@@ -241,26 +274,42 @@ def _fetch(url, timeout=20):
 
 
 def fetch_art(card, system, rom, fetch=_fetch):
-    """Download a game's box art onto the card. True when it now has some."""
-    repo = THUMB_REPOS.get(system.name)
-    if not repo:
-        return False
-    tries = thumb_names(rom)
-    for name in tries + [None]:
-        if name is None:              # not under its own name: look it up
-            name = best_match(rom, art_index(system, fetch))
-            if not name or name in tries:
-                return False
-        data = fetch(THUMB_URL % (repo, urllib.parse.quote(name)))
-        if data and data[:8] == b"\x89PNG\r\n\x1a\n":
-            out = art_path(card, system, rom)
-            os.makedirs(os.path.dirname(out), exist_ok=True)
-            data = _shrink(data)
-            with open(out + ".part", "wb") as f:
-                f.write(data)
-            os.replace(out + ".part", out)
-            return True
-    return False
+    """Download a game's box art onto the card. How it was found - "exact",
+    "close" or "other system" (a close match among a sibling's art, Game Boy
+    for Game Boy Color and the other way) - or None when it was not."""
+    if system.name not in THUMB_REPOS:
+        return None
+    tried = set()
+
+    def get(sysname, name):
+        if not name or (sysname, name) in tried:
+            return False
+        tried.add((sysname, name))
+        data = fetch(THUMB_URL % (THUMB_REPOS[sysname], urllib.parse.quote(name)))
+        if not (data and data[:8] == b"\x89PNG\r\n\x1a\n"):
+            return False
+        out = art_path(card, system, rom)
+        os.makedirs(os.path.dirname(out), exist_ok=True)
+        with open(out + ".part", "wb") as f:
+            f.write(_shrink(data))
+        os.replace(out + ".part", out)
+        return True
+
+    # Strict: under its own name, then the same title with other tags.
+    for name in thumb_names(rom):
+        if get(system.name, name):
+            return "exact"
+    names = art_index(system, fetch)
+    if get(system.name, best_match(rom, names)):
+        return "exact"
+    # Broader: the most alike title, then the same among a sibling's art.
+    if get(system.name, close_match(rom, names)):
+        return "close"
+    for other in SIBLINGS.get(system.name, ()):
+        sib = System(other, other, ())
+        if get(other, best_match(rom, art_index(sib, fetch)) or close_match(rom, art_index(sib, fetch))):
+            return "other system"
+    return None
 
 
 def _shrink(png):

@@ -215,6 +215,10 @@ Your computer fetches box art from libretro's thumbnail collection and covers fr
 Cover Art Archive, and saves them to the card. Run it again whenever you add things; it only
 fetches what is missing.
 
+**Or with the Game Zune app for Windows** (below): **music → get missing album art** and
+**games → get missing box art**. It searches strictly first, then more broadly, so it finds art
+the device's own lookup misses - see *How the app finds art*.
+
 **For anything it misses:**
 
 | | Where it goes | Tip |
@@ -309,10 +313,24 @@ SD card in your computer and start it; it finds the card by itself.
 
 | | |
 |---|---|
-| **music** | Browse by artist and album, search, **add songs** or **add a folder** (each song is filed as `Music/<artist>/<album>/<NN - title>` from its tags, with the album's cover saved beside it), **delete**, and **add to playlist**. |
+| **music** | Browse by artist and album, search, **add songs** or **add a folder** (each song is filed as `Music/<artist>/<album>/<NN - title>` from its tags, with the album's cover saved beside it), **delete**, **add to playlist**, and **get missing album art**. |
 | **playlists** | **new**, **rename**, **copy**, **delete**; **add songs** (searchable), **remove**, **move up / down**, **save**. **liked songs** is editable here too - it *is* your likes. The auto playlists are read-only (update rebuilds them), so **copy** one to change it. |
 | **games** | Game Boy, Game Boy Color and Game Boy Advance: **add games** (each goes to its system's folder, zips included), **delete**, and **get missing box art** from the [libretro-thumbnails](https://github.com/libretro-thumbnails) project - the Pixel 2 has no Wi-Fi to fetch it itself. |
 | **device** | **install / update the zune theme**, **restore the stock launcher** (with the same safety checks as the install script), **update library and auto playlists** (`zunesync`, with your Last.fm key if you have one), and **eject the card**. |
+
+**How the app finds art.** Each lookup goes from strict to broad and stops at the first hit; the
+report says which matches were broad so you can check those.
+
+| | Album covers (Deezer, then iTunes; no key needed) | Box art (libretro-thumbnails) |
+|---|---|---|
+| 0. Already there | a `cover`/`front`/`folder` picture in the album folder, or one inside the songs' tags | - |
+| 1. Exact | artist and album both match as asked (case, accents and punctuation aside) | the ROM's own name, then the same title with other tags (`(Rev 1)`, another region) |
+| 2. Close | the same artist and an album nearly the same: *The Bends* finds *The Bends (Collector's Edition)*, *Abbey Road - 2019 Mix* finds *Abbey Road* | the most alike title: `Pokemon Red.gb` finds *Pokemon - Red Version (USA, Europe)*, `Final Fantasy Legend 2` finds *... II*, `Zelda Link's Awakening DX` finds *Legend of Zelda, The - Link's Awakening DX*; USA art first, then World, Europe, Japan |
+| 3. Wider still | **by song**: an album with no name or not found takes the cover of the album one of its songs is on | **other system**: a Game Boy Color game is looked for among the Game Boy art, and the other way (libretro files dual-mode cartridges under one) |
+
+It never takes a different number: *Super Mario Land 2* never gets *Super Mario Land*'s art, nor
+*Vol. 2* *Vol. 1*'s, nor *Tetris Plus* *Tetris*'s. Covers are saved as `cover.jpg` (500 px) in
+the album's folder, box art as `Roms/<system>/.media/<ROM name>.png`.
 
 **Getting it:** each change to the app is built into `GameZune.exe` by this repo's GitHub
 Actions (**Actions → app → the latest run → Artifacts → GameZune-windows**). Pushing a tag

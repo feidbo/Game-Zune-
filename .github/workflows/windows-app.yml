@@ -40,6 +40,10 @@ jobs:
         run: python -m unittest discover -s manager/tests -v
       - name: zunesync's tests
         run: python -m unittest discover -s scripts/tests -v
+      - name: Art lookups on the real services (information only)
+        continue-on-error: true
+        timeout-minutes: 5
+        run: python manager/tests/live_art.py
 
   windows:
     runs-on: windows-latest
@@ -62,7 +66,7 @@ jobs:
           pyz = a.open_embedded_archive([n for n in a.toc if n.endswith(".pyz")][0])
           need = ["TortOS/tortos.elf", "TortOS/zune-wallpaper.jpg", "gamezune.ico"]
           have = {n.replace("\\", "/") for n in a.toc}       # Windows stores TortOS\tortos.elf
-          missing = [n for n in need if n not in have] + [m for m in ("zunesync", "mutagen", "gamezune.app") if m not in pyz.toc]
+          missing = [n for n in need if n not in have] + [m for m in ("zunesync", "mutagen", "gamezune.app", "gamezune.albumart") if m not in pyz.toc]
           assert not missing, missing
           print("ok:", len(a.toc), "files")
       - uses: actions/upload-artifact@v4

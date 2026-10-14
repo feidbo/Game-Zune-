@@ -339,6 +339,7 @@ class MusicPage(Page):
         ttk.Button(bar, text="add a folder...", command=self.add_folder).pack(side="left", padx=6)
         ttk.Button(bar, text="delete", command=self.delete).pack(side="left")
         ttk.Button(bar, text="add to playlist...", command=self.to_playlist).pack(side="left", padx=6)
+        ttk.Button(bar, text="get missing album art", command=self.covers).pack(side="left")
         self.search = tk.StringVar()
         self.search.trace_add("write", lambda *a: self.fill_songs())
         e = ttk.Entry(bar, textvariable=self.search, width=30)
@@ -427,9 +428,45 @@ class MusicPage(Page):
             return music.import_songs(card, paths, progress=lambda i, n, s: report(i, n, "copying " + s))
 
         def done(r):
-            messagebox.showinfo("Game Zune", summary("songs", *r))
+            bare = {rel.rsplit("/", 1)[0] for _, rel in r[0]}
+            bare = [d for d in bare if d.count("/") >= 1 and not music.has_cover(card, d)]
+            messagebox.showinfo("Game Zune", summary("songs", *r) + (
+                "\n\n%d album%s came without a cover: \"get missing album art\" looks %s up." % (
+                    len(bare), "" if len(bare) == 1 else "s", "it" if len(bare) == 1 else "them")
+                if bare else ""))
             self.app.reload_music()
         self.app.run(work, done, "adding songs")
+
+    def covers(self):
+        if not self.app.need_card():
+            return
+        card, tracks = self.app.card, list(self.app.tracks)
+        if not music.albums_without_covers(card, tracks):
+            messagebox.showinfo("Game Zune", "Every album on the card has its cover.")
+            return
+
+        def work(report):
+            return music.get_covers(card, tracks, progress=lambda i, n, s: report(i, n, "cover for " + s))
+
+        def done(r):
+            got, missing = r
+            hows = {}
+            for _, how in got:
+                hows[how] = hows.get(how, 0) + 1
+            lines = ["Covers for %d album%s." % (len(got), "" if len(got) == 1 else "s")]
+            for how, what in (("from its files", "from the album's own files (a picture or the songs' tags)"),
+                              ("exact", "found by artist and album"),
+                              ("close", "a close match (e.g. a deluxe edition) - worth a look"),
+                              ("by song", "found by one of the album's songs - worth a look")):
+                if hows.get(how):
+                    lines.append("  %d %s" % (hows[how], what))
+            if missing:
+                lines.append("\nNot found (%d): %s%s" % (
+                    len(missing), ", ".join(m.split("/", 1)[-1] for m in missing[:8]),
+                    ", ..." if len(missing) > 8 else ""))
+                lines.append("A picture called cover.jpg in an album's folder is always used.")
+            messagebox.showinfo("Game Zune", "\n".join(lines))
+        self.app.run(work, done, "getting album art (needs the internet)")
 
     def add_files(self):
         if not self.app.need_card():
@@ -813,16 +850,24 @@ class GamesPage(Page):
             got = []
             for i, r in enumerate(roms):
                 report(i, len(roms), "box art for " + os.path.splitext(r)[0])
-                if games.fetch_art(card, s, r):
-                    got.append(r)
+                how = games.fetch_art(card, s, r)
+                if how:
+                    got.append((r, how))
             return got
 
         def done(got):
-            miss = len(roms) - len(got)
-            messagebox.showinfo("Game Zune", "Box art for %d game%s.%s" % (
-                len(got), "" if len(got) == 1 else "s",
-                "\n\n%d not found under their names: libretro names games the No-Intro way, "
-                "e.g. \"Pokemon - Red Version (USA, Europe)\"." % miss if miss else ""))
+            miss = [r for r in roms if r not in dict(got)]
+            near = [os.path.splitext(r)[0] for r, how in got if how != "exact"]
+            text = "Box art for %d game%s." % (len(got), "" if len(got) == 1 else "s")
+            if near:
+                text += ("\n\n%d by a close match - worth a look: %s%s" % (
+                    len(near), ", ".join(near[:6]), ", ..." if len(near) > 6 else ""))
+            if miss:
+                text += ("\n\nNot found (%d): %s%s\nRenaming a game the No-Intro way, e.g. "
+                         "\"Pokemon - Red Version (USA, Europe)\", helps." % (
+                             len(miss), ", ".join(os.path.splitext(r)[0] for r in miss[:6]),
+                             ", ..." if len(miss) > 6 else ""))
+            messagebox.showinfo("Game Zune", text)
             self.fill()
         self.app.run(work, done, "getting box art (needs the internet)")
 

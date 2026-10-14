@@ -1,6 +1,8 @@
 """The app's work, without its window: python -m unittest discover -s manager/tests"""
 import io
+import json
 import os
+import urllib.parse
 import shutil
 import subprocess
 import sys
@@ -9,7 +11,7 @@ import unittest
 import zipfile
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
-from gamezune import card as C, device, games, music, playlists  # noqa: E402
+from gamezune import albumart, card as C, device, games, match, music, playlists  # noqa: E402
 
 HAVE_FFMPEG = shutil.which("ffmpeg") is not None
 
@@ -234,6 +236,141 @@ class ArtNames(CardTest):
         games._index_cache.clear()
         gb = games.System("Game Boy", "Game Boy", ("gb",))
         self.assertTrue(games.fetch_art(self.card, gb, "Tetris (World).gb", fetch=fake))
+        games._index_cache.clear()
+
+
+class Matching(unittest.TestCase):
+    def test_names_alike_and_not(self):
+        L = match.loose
+        self.assertEqual(L("The Bends (Collector's Edition)"), "bends")
+        self.assertEqual(L("Abbey Road - 2019 Mix"), "abbey road")
+        self.assertEqual(L("Legend of Zelda, The - Link's Awakening", music=False),
+                         L("The Legend of Zelda: Link's Awakening", music=False))
+        self.assertEqual(L("Final Fantasy Legend II"), "final fantasy legend 2")
+        self.assertEqual(L("Pokemon - Red Version", music=False), "pokemon red version")
+        self.assertGreaterEqual(match.similar(L("pokemon red"), L("pokemon red version")), 0.8)
+        self.assertGreaterEqual(match.similar(L("ok computer"), L("OK Computer OKNOTOK 1997 2017")), 0.75)
+        for want, got in (("tetris plus", "tetris"), ("super mario land 2", "super mario land"),
+                          ("tetris", "tetris 2"), ("Greatest Hits Vol. 2", "Greatest Hits Vol. 1")):
+            self.assertLess(match.similar(L(want), L(got)), 0.75, (want, got))
+        self.assertTrue(match.same_artist("Beyonce", "Beyoncé"))
+        self.assertTrue(match.same_artist("Daft Punk", "Daft Punk & Pharrell Williams"))
+        self.assertFalse(match.same_artist("Rem", "Remy Ma"))
+
+
+def jpeg(side=900):
+    from PIL import Image
+    b = io.BytesIO()
+    Image.new("RGB", (side, side), (200, 0, 140)).save(b, "JPEG")
+    return b.getvalue()
+
+
+class FakeMusicWeb:
+    """Deezer and iTunes as they answer: everything they hold for any search,
+    for the matching to sort out, the way a real search returns near misses."""
+    ALBUMS = [("Discovery", "Daft Punk", "https://img/discovery.jpg"),
+              ("The Bends (Collector's Edition)", "Radiohead", "https://img/bends.jpg"),
+              ("Greatest Hits Vol. 1", "Queen", "https://img/gh1.jpg")]
+    SONGS = [("Blinding Lights", "The Weeknd", "https://img/afterhours.jpg")]
+    ITUNES = [("folklore", "Taylor Swift", "https://img/folklore/100x100bb.jpg")]
+
+    def __init__(self):
+        self.asked = []
+
+    def __call__(self, url):
+        self.asked.append(url)
+        if url.startswith("https://img/"):
+            return jpeg()
+        if "api.deezer.com/search/album" in url:
+            return json.dumps({"data": [{"title": t, "artist": {"name": a}, "cover_xl": p}
+                                        for t, a, p in self.ALBUMS]}).encode()
+        if "api.deezer.com/search" in url:
+            return json.dumps({"data": [{"title": t, "artist": {"name": a}, "album": {"cover_xl": p}}
+                                        for t, a, p in self.SONGS]}).encode()
+        if "itunes.apple.com" in url:
+            q = urllib.parse.parse_qs(urllib.parse.urlparse(url).query)
+            key = "collectionName" if q["entity"] == ["album"] else "trackName"
+            return json.dumps({"results": [{key: t, "artistName": a, "artworkUrl100": p}
+                                           for t, a, p in self.ITUNES]}).encode()
+        return None
+
+
+class AlbumArt(CardTest):
+    def test_strict_then_broader_then_by_song(self):
+        for rel in ("Music/Daft Punk/Discovery/01 - One More Time.mp3",
+                    "Music/Radiohead/The Bends/01 - Planet Telex.mp3",
+                    "Music/The Weeknd/Unknown Album/01 - Blinding Lights.mp3",
+                    "Music/Taylor Swift/folklore/01 - the 1.mp3",
+                    "Music/Queen/Greatest Hits Vol. 2/01 - A Kind of Magic.mp3",
+                    "Music/Someone Else/Discovery/01 - Other.mp3",
+                    "Music/Local/Album/01 - Song.mp3", "Music/Local/Album/back.png",
+                    "Music/Loose song.mp3",
+                    "Music/Has/Cover/01 - Song.mp3", "Music/Has/Cover/folder.jpg"):
+            self.put(rel, jpeg(10) if rel.endswith((".jpg", ".png")) else b"x")
+        self.put("Music/Local/Album/front.jpg", jpeg(10))
+        web = FakeMusicWeb()
+        tracks = music.scan(self.card, tags=False)
+        todo = [rel for rel, *_ in music.albums_without_covers(self.card, tracks)]
+        self.assertNotIn("Music", todo, "loose songs are no album")
+        self.assertNotIn("Music/Has/Cover", todo)
+        got, missing = music.get_covers(self.card, tracks, finder=albumart.Finder(web, pace=False))
+        self.assertEqual(dict(got), {"Music/Daft Punk/Discovery": "exact",
+                                     "Music/Radiohead/The Bends": "close",
+                                     "Music/The Weeknd/Unknown Album": "by song",
+                                     "Music/Taylor Swift/folklore": "exact",
+                                     "Music/Local/Album": "from its files"})
+        self.assertEqual(sorted(missing), ["Music/Queen/Greatest Hits Vol. 2", "Music/Someone Else/Discovery"],
+                         "never another volume, nor another artist's album")
+        from PIL import Image
+        cover = self.card.full("Music/Daft Punk/Discovery/cover.jpg")
+        with Image.open(cover) as im:
+            self.assertEqual(im.size, (albumart.SIDE, albumart.SIDE))
+        self.assertTrue(any("600x600bb" in u for u in web.asked), "iTunes art asked for big")
+        self.assertTrue(music.has_cover(self.card, "Music/Local/Album"))
+        self.assertEqual(music.get_covers(self.card, music.scan(self.card, tags=False),
+                                          finder=albumart.Finder(web, pace=False))[0], [],
+                         "a second run finds only what is still missing")
+
+
+class BroaderBoxArt(CardTest):
+    NAMES = ["Tetris (World) (Rev 1)", "Tetris 2 (USA, Europe)", "Pokemon - Red Version (USA, Europe)",
+             "Pokemon - Red Version (Japan)", "Super Mario Land (World)",
+             "Super Mario Land 2 - 6 Golden Coins (USA, Europe)", "Final Fantasy Legend II (USA)",
+             "Legend of Zelda, The - Link's Awakening (USA, Europe)"]
+
+    def test_close_names(self):
+        for rom, want in (("Pokemon Red.gb", "Pokemon - Red Version (USA, Europe)"),
+                          ("pokemon_red.gb", "Pokemon - Red Version (USA, Europe)"),
+                          ("Super Mario Land 2.gb", "Super Mario Land 2 - 6 Golden Coins (USA, Europe)"),
+                          ("Final Fantasy Legend 2 (U) [!].gb", "Final Fantasy Legend II (USA)"),
+                          ("The Legend of Zelda - Links Awakening.gb",
+                           "Legend of Zelda, The - Link's Awakening (USA, Europe)"),
+                          ("Tetris Plus (USA).gb", None), ("Tetris 3.gb", None), ("Mario.gb", None)):
+            self.assertEqual(games.close_match(rom, self.NAMES), want, rom)
+
+    def test_broader_then_the_other_game_boy(self):
+        png = io.BytesIO()
+        __import__("PIL.Image").Image.new("RGB", (8, 8)).save(png, "PNG")
+        lists = {"Nintendo%20-%20Game%20Boy/Named_Boxarts/": self.NAMES + [
+                     "Pokemon - Yellow Version - Special Pikachu Edition (USA, Europe) (CGB+SGB Enhanced)"],
+                 "Nintendo%20-%20Game%20Boy%20Color/Named_Boxarts/": ["Tetris DX (World)"]}
+        asked = []
+
+        def fake(url):
+            asked.append(url)
+            for k, names in lists.items():
+                if url.endswith(k):
+                    return ("".join('<a href="%s.png">x</a>' % urllib.parse.quote(n) for n in names)).encode()
+            ok = ("Nintendo_-_Game_Boy/master/Named_Boxarts/Pokemon%20-%20Red%20Version%20%28USA%2C%20Europe%29",
+                  "Nintendo_-_Game_Boy/master/Named_Boxarts/Pokemon%20-%20Yellow")
+            return png.getvalue() if any(k in url for k in ok) else None
+        games._index_cache.clear()
+        gb = games.System("Game Boy", "Game Boy", ("gb",))
+        gbc = games.System("Game Boy Color", "Game Boy Color", ("gbc",))
+        self.assertEqual(games.fetch_art(self.card, gb, "Pokemon Red.gb", fetch=fake), "close")
+        self.assertEqual(games.fetch_art(self.card, gbc, "Pokemon Yellow.gbc", fetch=fake), "other system")
+        self.assertTrue(games.has_art(self.card, gbc, "Pokemon Yellow.gbc"))
+        self.assertIsNone(games.fetch_art(self.card, gb, "Tetris Plus.gb", fetch=fake))
         games._index_cache.clear()
 
 

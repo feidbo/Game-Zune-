@@ -209,11 +209,28 @@ def _cover_for(src_dir, first_song):
 
 
 def _has_cover(folder):
+    """Whether the Pixel 2 has a picture for this folder: one called cover or
+    folder, or the only picture there (src/muselib.c, ml_folder_image)."""
     try:
-        return any(os.path.splitext(n)[0].lower() in ("cover", "folder") and
-                   os.path.splitext(n)[1].lower() in IMAGES for n in os.listdir(folder))
+        pics = [n for n in os.listdir(folder)
+                if not n.startswith(".") and os.path.splitext(n)[1].lower() in IMAGES]
     except OSError:
         return False
+    return len(pics) == 1 or any(os.path.splitext(n)[0].lower() in ("cover", "folder") for n in pics)
+
+
+def has_cover(card, rel):
+    return _has_cover(card.full(rel))
+
+
+def _write_cover(folder, data, ext):
+    out = os.path.join(folder, "cover" + ext)
+    if isinstance(data, str):
+        shutil.copyfile(data, out + ".part")
+    else:
+        with open(out + ".part", "wb") as fh:
+            fh.write(data)
+    os.replace(out + ".part", out)
 
 
 def import_songs(card, paths, progress=None, cancelled=lambda: False):
@@ -250,19 +267,73 @@ def import_songs(card, paths, progress=None, cancelled=lambda: False):
             covers_done.add(folder)
             cover = _cover_for(os.path.dirname(src), src)
             if cover:
-                data, ext = cover
                 try:
-                    out = os.path.join(folder, "cover" + ext)
-                    if isinstance(data, str):
-                        shutil.copyfile(data, out)
-                    else:
-                        with open(out, "wb") as fh:
-                            fh.write(data)
+                    _write_cover(folder, *cover)
                 except OSError:
                     pass
     if progress:
         progress(len(songs), len(songs), "")
     return added, skipped, failed
+
+
+# ---- covers from the internet ----------------------------------------------------------
+
+def albums_without_covers(card, tracks):
+    """[(folder, artist, album, [song titles])] for each album folder the
+    Pixel 2 has no picture for."""
+    folders = {}
+    for t in tracks:
+        if not t.rel.startswith("Music/"):
+            continue
+        folders.setdefault(t.rel.rsplit("/", 1)[0], []).append(t)
+    out = []
+    for rel, ts in sorted(folders.items()):
+        parts = rel.split("/")
+        # Songs loose in Music/ are no album: one picture would be all of theirs.
+        if len(parts) < 2 or _has_cover(card.full(rel)):
+            continue
+        # Music/<artist>/<album>/, or Music/<artist>/ with the songs in it:
+        # then there is no album name, and the songs find the cover.
+        artist = parts[1]
+        album = parts[2] if len(parts) >= 3 else ""
+        out.append((rel, artist, album, [t.title for t in sorted(ts, key=lambda t: t.num) if t.title]))
+    return out
+
+
+def get_covers(card, tracks, finder=None, progress=None, cancelled=lambda: False):
+    """A cover for every album folder without one: from its own songs first,
+    then looked up (gamezune/albumart.py). Returns (got, missing): got a
+    list of (folder, how), how being "from its files", "exact", "close" or
+    "by song"; missing the folders nothing was found for."""
+    from .albumart import Finder
+    finder = finder or Finder()
+    todo = albums_without_covers(card, tracks)
+    got, missing = [], []
+    for i, (rel, artist, album, titles) in enumerate(todo):
+        if cancelled():
+            break
+        if progress:
+            progress(i, len(todo), "%s - %s" % (album or rel.rsplit("/", 1)[-1], artist))
+        folder = card.full(rel)
+        songs = sorted(n for n in os.listdir(folder) if n.lower().endswith(AUDIO))
+        local = _cover_for(folder, os.path.join(folder, songs[0])) if songs else None
+        try:
+            if local:
+                _write_cover(folder, *local)
+                got.append((rel, "from its files"))
+                continue
+            url, how = finder.find(artist, album, titles)
+            data = finder.picture(url)
+            if data:
+                _write_cover(folder, data, ".jpg")
+                got.append((rel, how))
+            else:
+                missing.append(rel)
+        except OSError:
+            missing.append(rel)
+    if progress:
+        progress(len(todo), len(todo), "")
+    return got, missing
 
 
 # ---- taking away --------------------------------------------------------------------
