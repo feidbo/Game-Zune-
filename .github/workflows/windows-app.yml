@@ -44,6 +44,10 @@ jobs:
         continue-on-error: true
         timeout-minutes: 5
         run: python manager/tests/live_art.py
+      - name: Game info on the real services (information only)
+        continue-on-error: true
+        timeout-minutes: 8
+        run: python manager/tests/live_gameinfo.py
 
   windows:
     runs-on: windows-latest
