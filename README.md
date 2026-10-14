@@ -74,6 +74,12 @@ the time (see [Sources](#sources)):
   nothing gets bumped in a pocket. The music keeps playing and headset buttons still work.
   **MENU** wakes it; if MENU was only bumped and nothing else is pressed, it locks itself again
   after 10 seconds. If the music stops, Auto Off still turns the Pixel 2 off to save the battery.
+  The screen is fully off while locked: the backlight is switched off *and* set to zero, and
+  your brightness comes back when you wake it.
+- **Screen Off (sleep):** the first row of **settings** turns the screen off at any time, with
+  or without music - the same as the pocket lock (only MENU wakes it, the music keeps playing,
+  it goes dark again 10 seconds after a wake unless you press something). With nothing playing,
+  Auto Off turns the Pixel 2 off after its usual time.
 - **Battery:** every Zune screen (the top menu, the zune and game boy menus, lists, Now Playing,
   settings) shows the battery beside the clock, top right. It empties as it runs down, turns
   **red at 10%** and below, and shows a **lightning bolt** while charging.
@@ -115,7 +121,7 @@ play/pause button and **B** its back button.
 | Y | — | Favorite | — | **Like** (adds to liked songs) / unlike |
 | START | — | — | Play / pause | Play / pause (**hold: pocket lock**) |
 | SELECT | Music | Music | Close music | Close music |
-| MENU | TortOS menu (UI Theme is in here) | TortOS menu (**Sound: game / zune music**) | Music menu (rescan, lock…) | Music menu; **wakes the pocket lock** |
+| MENU | TortOS menu (UI Theme and **Screen Off** are in here) | TortOS menu (**Sound: game / zune music**) | Music menu (rescan, lock…) | Music menu; **wakes the pocket lock** |
 
 ---
 
@@ -418,7 +424,9 @@ Two patches, in `tortos-zune/patches/`, each building and passing TortOS's check
      screenshot harness.
    - `src/ui.*`: switching the menus' typeface at runtime, and flat panels.
    - `src/cards.h`: *Zune* as a third UI Theme, and the default.
-   - `src/device/*.c`: `TORTOS_FAKE_BATT=40c` fakes a charging battery for screenshots.
+   - `src/device/*.c`: `TORTOS_FAKE_BATT=40c` fakes a charging battery for screenshots; on the
+     Pixel 2 the backlight goes off by both `bl_power` and a level of 0.
+   - `src/sys_menu.*`, `tools/menu-check.c`: **Screen Off**, first in the settings menu.
    - `src/game_menu.*`, `tools/menu-check.c`: the in-game menu's **Sound** row (game / music).
    - `src/controls.*`, `tools/controls-check.c`: the theme's Controls pages.
    - `src/device/brick.c`: the rest of the pad on the desktop build's keyboard, for driving it in
