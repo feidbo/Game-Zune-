@@ -58,6 +58,7 @@ CRITICS = [("MC", "metacritic"), ("GR", "gamerankings"), ("Fam", "famitsu"), ("I
 
 # Trivia words weigh more than sales words: a sales figure is the fallback,
 # not the first choice (CI's live run picked one for nearly every game).
+OUT_OF_TEN = {"IGN", "GSpot", "NLife", "EuroG", "Edge", "GameZone"}   # their scale, when a table leaves it off
 FACT_WORDS = {"originally": 5, "named after": 6, "inspired": 5, "working title": 6,
               "easter egg": 6, "secret": 4, "hidden": 3, "cancel": 3, "prototype": 4,
               "unused": 4, "intended": 3, "based on": 3, "guinness": 5, "the first": 3,
@@ -65,7 +66,8 @@ FACT_WORDS = {"originally": 5, "named after": 6, "inspired": 5, "working title":
               "best-selling": 3, "million": 2, "sold": 1, "remake": 1, "sequel": 1,
               "composer": 2, "voice": 1, "cameo": 4, "reference": 3}
 FACT_AVOID = ("praised", "criticized", "criticised", "review", "score", "rated", "metacritic",
-              "gamerankings", "aggregat", "citation needed")
+              "gamerankings", "aggregat", "citation needed", " felt ", " said", "called it",
+              "described", "opined", "\"")
 FACT_SECTIONS = ("development", "production", "design", "release", "legacy", "sales",
                  "trivia", "history", "reception", "music", "marketing", "localization")
 
@@ -225,7 +227,8 @@ def _year(ent, system, intro=""):
         m = re.match(r"[+-]?(\d{4})", t)
         if m:
             years.append(int(m.group(1)))
-    first = FIRST_YEAR.get(system, 1980)
+    # A cartridge that plays on both Game Boys may be the other one's game.
+    first = min(FIRST_YEAR.get(system, 1980), FIRST_YEAR.get(SIBLING.get(system, ""), 9999))
     era = [y for y in years if first <= y <= first + 12]
     m = re.search(r"\b((?:19|20)\d\d)\b[^.]{0,60}\b(?:video )?game\b", intro)
     told = int(m.group(1)) if m and first <= int(m.group(1)) <= first + 12 else None
@@ -323,7 +326,9 @@ def score_label(table):
         elif key == "GR" and not v.endswith("%"):
             v = v.split("/")[0] + "%"
         elif key == "GR":
-            v = "%d%%" % int(float(v[:-1]) + 0.5)     # 88.5 is 89, not round()'s 88
+            v = "%d%%" % int(float(v[:-1]) + 0.5)
+        elif key in OUT_OF_TEN and "/" not in v and not v.endswith("%"):
+            v += "/10"     # 88.5 is 89, not round()'s 88
         return "%s %s" % (name, v)
     return ""
 
