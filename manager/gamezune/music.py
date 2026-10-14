@@ -130,7 +130,9 @@ def group(tracks):
     lib = {}
     for t in tracks:
         parts = t.rel.split("/")
-        artist = parts[1] if len(parts) >= 4 else "(singles)"
+        # The act, as the Pixel 2 lists it: "The Beatles feat. Johnny"'s
+        # folder is the Beatles'.
+        artist = primary_artist(parts[1]) if len(parts) >= 4 else "(singles)"
         album = parts[2] if len(parts) >= 4 else (parts[1] if len(parts) == 3 else "(singles)")
         lib.setdefault(artist, {}).setdefault(album, []).append(t)
     for albums in lib.values():
@@ -155,10 +157,26 @@ def audio_files(paths):
     return out
 
 
+# Who is featured, cut from an artist's name - the Pixel 2's ml_primary_artist
+# (src/muselib.c), word for word, so the card and the app agree.
+_FEAT = re.compile(r" (?:feat\.?|ft\.?|featuring) | [(\[](?:feat|ft\.|ft |featuring)", re.I)
+
+
+def primary_artist(name):
+    """"The Beatles feat. Johnny" is the Beatles; "Simon & Garfunkel" is
+    still Simon & Garfunkel - only "feat.", "ft." and "featuring" split."""
+    m = _FEAT.search(name or "")
+    if not m:
+        return name
+    cut = name[:m.start()].rstrip(" ,-")
+    return cut or name
+
+
 def destination(card, src, tags):
-    """Where a song goes on the card, from its tags (or its folders, without)."""
+    """Where a song goes on the card, from its tags (or its folders, without):
+    under the act, not whoever it features."""
     parent = os.path.basename(os.path.dirname(os.path.abspath(src)))
-    artist = tags["albumartist"] or tags["artist"] or "Unknown Artist"
+    artist = primary_artist(tags["albumartist"] or tags["artist"] or "Unknown Artist")
     album = tags["album"] or parent or "Unknown Album"
     num, title = _name_from_file(os.path.basename(src))
     title = tags["title"] or title
@@ -294,7 +312,7 @@ def albums_without_covers(card, tracks):
             continue
         # Music/<artist>/<album>/, or Music/<artist>/ with the songs in it:
         # then there is no album name, and the songs find the cover.
-        artist = parts[1]
+        artist = primary_artist(parts[1])
         album = parts[2] if len(parts) >= 3 else ""
         out.append((rel, artist, album, [t.title for t in sorted(ts, key=lambda t: t.num) if t.title]))
     return out

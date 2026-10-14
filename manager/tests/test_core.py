@@ -115,6 +115,19 @@ class Music(CardTest):
         self.assertTrue(os.path.exists(self.card.full("Music/.zune/library.tsv")))
 
 
+@unittest.skipUnless(HAVE_FFMPEG, "needs ffmpeg to make songs")
+class Featured(CardTest):
+    def test_a_featured_artist_files_under_the_act(self):
+        song(os.path.join(self.src, "a.mp3"), "Come Together", "The Beatles", "Abbey Road", track="1")
+        song(os.path.join(self.src, "b.mp3"), "One Night", "The Beatles feat. Johnny", "One Night", track="1")
+        added, _, _ = music.import_songs(self.card, [self.src])
+        self.assertEqual(sorted(r.split("/")[1] for _, r in added), ["The Beatles", "The Beatles"])
+        self.put("Music/Drake ft. Rihanna/Take Care/01 - Take Care.mp3")
+        lib = music.group(music.scan(self.card, tags=False))
+        self.assertEqual(sorted(lib), ["Drake", "The Beatles"])
+        self.assertEqual(sorted(lib["The Beatles"]), ["Abbey Road", "One Night"])
+
+
 class Playlists(CardTest):
     def setUp(self):
         super().setUp()

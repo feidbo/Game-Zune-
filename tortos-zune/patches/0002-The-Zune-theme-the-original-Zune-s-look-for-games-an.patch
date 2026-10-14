@@ -1,4 +1,4 @@
-From dd4039145de6897c3f88d24fcf304694bb454e17 Mon Sep 17 00:00:00 2001
+From 3d215d843a5eb75d2ebc32a8b674c9e20a69d4a2 Mon Sep 17 00:00:00 2001
 From: Claude <noreply@anthropic.com>
 Date: Tue, 13 Oct 2026 20:31:25 +0000
 Subject: [PATCH 2/2] The Zune theme: the original Zune's look, for games and
@@ -59,6 +59,13 @@ the Zune 30, 80 and 120, the players with buttons - drew itself.
   instead of a stat per file: on the card's exFAT each stat searched the
   folder again, and 19,000 songs were 21,000 lookups before the first
   frame. The same in the loose-songs tidy.
+- An act with someone featured is the act: "The Beatles feat. Johnny"'s
+  folder is folded into the Beatles' albums, for every list (muselib's
+  ml_primary_artist; only "feat.", "ft." and "featuring" split a name).
+- The boot animation: on the Pixel 2, whose splash plays
+  /usr/share/splash/frames.bin, TortOS/zune-splash.bin goes there while
+  the theme is the Zune's, TortOS's own kept beside it (and on the card)
+  and put back when it is not. Done after the first frame.
 - The fonts and the background are opened when the theme first draws,
   so the other themes pay nothing for it.
 
@@ -74,8 +81,9 @@ the theme's Controls pages.
  src/device/pixel2.c    |   19 +-
  src/game_menu.c        |    3 +-
  src/game_menu.h        |    4 +-
- src/main.c             |  888 +++++++++++++++++--
- src/muselib.c          |   14 +-
+ src/main.c             |  976 +++++++++++++++++++--
+ src/muselib.c          |  104 ++-
+ src/muselib.h          |    6 +
  src/sys_menu.c         |    1 +
  src/sys_menu.h         |    7 +-
  src/ui.c               |   52 ++
@@ -86,7 +94,8 @@ the theme's Controls pages.
  src/zune_music.h       | 1900 ++++++++++++++++++++++++++++++++++++++++
  tools/controls-check.c |   10 +-
  tools/menu-check.c     |    9 +-
- 19 files changed, 4393 insertions(+), 103 deletions(-)
+ tools/muselib-check.c  |   53 ++
+ 21 files changed, 4629 insertions(+), 104 deletions(-)
  create mode 100644 src/zune.c
  create mode 100644 src/zune.h
  create mode 100644 src/zune_games.h
@@ -328,7 +337,7 @@ index 6190116..1a1ece1 100644
  	int         total;    /* 0: this game has no achievement set */
  } gm_ui;
 diff --git a/src/main.c b/src/main.c
-index 6ae0cad..fdb0090 100644
+index 6ae0cad..7487669 100644
 --- a/src/main.c
 +++ b/src/main.c
 @@ -51,6 +51,7 @@
@@ -437,7 +446,7 @@ index 6ae0cad..fdb0090 100644
  		/* THE DURATION IS FIXED BUT THE DISTANCE IS NOT. ANIM_MS is 240ms
  		 * whatever the travel, and Vertical shows one card at a time, so a
  		 * step moves 878px where the horizontal row moves 400. At the shared
-@@ -3044,10 +3107,379 @@ furniture:
+@@ -3044,10 +3107,455 @@ furniture:
  	}
  }
  
@@ -510,6 +519,80 @@ index 6ae0cad..fdb0090 100644
 +	return 0;
 +}
 +
++/* The Zune boot animation, on a device whose splash is a file (the Pixel 2's
++ * /usr/bin/splash, which plays /usr/share/splash/frames.bin until the
++ * launcher's first frame): TortOS/zune-splash.bin there while the theme is
++ * the Zune's (scripts/make_zune_splash.py makes it), TortOS's own put back
++ * when it is not. TortOS's is kept beside it the first time, once, and a
++ * copy goes on the card too, so it is never lost. A file the splash cannot
++ * read only means no animation - the splash runs beside the launcher and
++ * nothing waits for it. Written whole beside the old one and renamed over
++ * it, so a power cut leaves one or the other. */
++#define SPLASH_LIVE  "/usr/share/splash/frames.bin"
++#define SPLASH_STOCK "/usr/share/splash/frames.stock.bin"
++
++static char *splash_read(const char *path, long *len)
++{
++	FILE *f = fopen(path, "rb");
++	char *b = NULL;
++
++	*len = -1;
++	if (!f) return NULL;
++	if (fseek(f, 0, SEEK_END) == 0 && (*len = ftell(f)) > 0 && *len < 32L * 1024 * 1024 &&
++	    fseek(f, 0, SEEK_SET) == 0 && (b = malloc((size_t)*len)) &&
++	    fread(b, 1, (size_t)*len, f) != (size_t)*len) {
++		free(b);
++		b = NULL;
++	}
++	fclose(f);
++	return b;
++}
++
++static bool splash_write(const char *path, const char *data, long len)
++{
++	char tmp[256];
++	FILE *f;
++	bool ok;
++
++	snprintf(tmp, sizeof tmp, "%s.new", path);
++	if (!(f = fopen(tmp, "wb"))) return false;
++	ok = fwrite(data, 1, (size_t)len, f) == (size_t)len && fflush(f) == 0 && fsync(fileno(f)) == 0;
++	ok = fclose(f) == 0 && ok;
++	if (ok && rename(tmp, path) == 0) return true;
++	unlink(tmp);
++	return false;
++}
++
++static void zune_splash_sync(void)
++{
++	char mine_path[CFG_STR * 2], card_copy[CFG_STR * 2];
++	char *live, *want = NULL;
++	long nlive, nwant = -1;
++
++	if (access(SPLASH_LIVE, F_OK) != 0) return;   /* no such splash here */
++	live = splash_read(SPLASH_LIVE, &nlive);
++	if (!live) return;
++	if (zune_ui()) {
++		snprintf(mine_path, sizeof mine_path, "%s/zune-splash.bin", P_ROOT);
++		want = splash_read(mine_path, &nwant);
++		if (want && memcmp(want, "TSPL", 4) == 0 && (nwant != nlive || memcmp(want, live, (size_t)nlive))) {
++			/* TortOS's own, kept before anything replaces it. */
++			if (access(SPLASH_STOCK, F_OK) != 0) {
++				snprintf(card_copy, sizeof card_copy, "%s/splash.stock.bin", P_ROOT);
++				if (splash_write(SPLASH_STOCK, live, nlive)) splash_write(card_copy, live, nlive);
++			}
++			if (access(SPLASH_STOCK, F_OK) == 0 && splash_write(SPLASH_LIVE, want, nwant))
++				fprintf(stderr, "zune: the boot animation is the Zune's\n");
++		}
++	} else if ((want = splash_read(SPLASH_STOCK, &nwant)) &&
++	           (nwant != nlive || memcmp(want, live, (size_t)nlive))) {
++		if (splash_write(SPLASH_LIVE, want, nwant))
++			fprintf(stderr, "zune: the boot animation is TortOS's again\n");
++	}
++	free(want);
++	free(live);
++}
++
 +/* The theme has just changed. Each theme moves the same cursors its own
 + * way, so the one switched to starts from where they are: the stock shelf's
 + * row on the current system and its games, and the Zune's menus at the
@@ -518,6 +601,8 @@ index 6ae0cad..fdb0090 100644
 +static void theme_switched(app *a)
 +{
 +	sysview *v = &a->view[a->sys_cursor];
++
++	zune_splash_sync();
 +
 +	if (zune_ui()) {
 +		bool games = a->screen == SCREEN_GAMES && !is_muse(&a->sys.systems[a->sys_cursor]);
@@ -818,7 +903,7 @@ index 6ae0cad..fdb0090 100644
  
  	SDL_Rect focus;
  	const system_cfg *s = &a->sys.systems[a->sys_cursor];
-@@ -3058,7 +3490,7 @@ static void draw_systems(app *a)
+@@ -3058,7 +3566,7 @@ static void draw_systems(app *a)
  	 * a game into paging through a catalog. */
  	/* Vertical stacks the same row down the screen. Cubic is excluded: it
  	 * does not draw this row at all. */
@@ -827,7 +912,7 @@ index 6ae0cad..fdb0090 100644
  	                           ? &CF_LAYOUT_SYSTEMS_V : &CF_LAYOUT_SYSTEMS);
  
  	cf_focus_rect(&lay, TORTOS_SCREEN_W, TORTOS_SCREEN_H, &focus);
-@@ -3083,7 +3515,7 @@ static void draw_systems(app *a)
+@@ -3083,7 +3591,7 @@ static void draw_systems(app *a)
  	const system_cfg *label = s;
  	float label_a = 1.0f;
  
@@ -836,7 +921,7 @@ index 6ae0cad..fdb0090 100644
  		int li = 0;
  
  		label_a = cf_label(&a->cf_sys, a->sys.count, &li);
-@@ -3132,7 +3564,7 @@ static void draw_systems(app *a)
+@@ -3132,7 +3640,7 @@ static void draw_systems(app *a)
  	}
  	ui_text(a->r, ui_font(UI_F_META), line, TORTOS_SCREEN_W / 2, 690, 0,
  	        ui_fade(UI_TEXT_DIM, label_a));
@@ -845,7 +930,7 @@ index 6ae0cad..fdb0090 100644
  		(a->r, TORTOS_SCREEN_W, TORTOS_SCREEN_H, a->cf_sys.pos, a->sys.count,
  		 s->accent, rail_sys_hue, a);
  }
-@@ -3367,9 +3799,9 @@ static void draw_game_text(app *a, sysview *v, const system_cfg *s, int idx)
+@@ -3367,9 +3875,9 @@ static void draw_game_text(app *a, sysview *v, const system_cfg *s, int idx)
  		 * Cubic draws the same string in the same place, from its own caller,
  		 * after the cube; baked into a face it would turn away mid-move and two
  		 * would show at once, one per face, disagreeing by one. */
@@ -857,7 +942,7 @@ index 6ae0cad..fdb0090 100644
  				ui_text(a->r, ui_font(UI_F_META), count, 24, 700,
  				        -1, UI_TEXT_DIM);
  			else
-@@ -3418,7 +3850,8 @@ static void draw_games(app *a)
+@@ -3418,7 +3926,8 @@ static void draw_games(app *a)
  {
  	shelf_pacing(&a->view[a->sys_cursor].cf);
  	shelf_pacing(&a->cf_sys);
@@ -867,7 +952,7 @@ index 6ae0cad..fdb0090 100644
  
  	sysview *v = &a->view[a->sys_cursor];
  	const system_cfg *s = &a->sys.systems[a->sys_cursor];
-@@ -3430,7 +3863,7 @@ static void draw_games(app *a)
+@@ -3430,7 +3939,7 @@ static void draw_games(app *a)
  	ui_glow(a->r, &focus, s->accent, 100, 2.3f);
  	if (cf_draw(&v->cf, a->r, TORTOS_SCREEN_W, TORTOS_SCREEN_H, v->list.count,
  	            game_get_tex, a,
@@ -876,7 +961,7 @@ index 6ae0cad..fdb0090 100644
  	            : albums ? &CF_LAYOUT_ALBUMS_V : &CF_LAYOUT_GAMES_V))
  		redraw_now();
  	/* Warm where the move is about to cut to, one card per frame, underneath
-@@ -3444,7 +3877,7 @@ static void draw_games(app *a)
+@@ -3444,7 +3953,7 @@ static void draw_games(app *a)
  	if (!cf_cutting(&v->cf)) evict_far(v, TEX_KEEP_NEAR);
  
  	draw_game_text(a, v, s, v->cursor);
@@ -885,7 +970,7 @@ index 6ae0cad..fdb0090 100644
  		(a->r, TORTOS_SCREEN_W, TORTOS_SCREEN_H, v->cf.pos, v->list.count,
  		 s->accent, NULL, NULL);
  }
-@@ -3498,7 +3931,8 @@ static void draw_shelf(app *a)
+@@ -3498,7 +4007,8 @@ static void draw_shelf(app *a)
  	if (a->sys.count <= 0) draw_no_games(a);
  	else if (a->screen == SCREEN_SYSTEMS) draw_systems(a);
  	else draw_games(a);
@@ -895,7 +980,7 @@ index 6ae0cad..fdb0090 100644
  }
  
  static void render(app *a)
-@@ -3781,6 +4215,8 @@ static void menu_draw_ex(app *a, const char *heading, const menu_row *rows,
+@@ -3781,6 +4291,8 @@ static void menu_draw_ex(app *a, const char *heading, const menu_row *rows,
  {
  	TTF_Font *fm = ui_font(UI_F_MENU), *fh = ui_font(UI_F_LABEL);
  	int row_h = menu_row_h();
@@ -904,7 +989,7 @@ index 6ae0cad..fdb0090 100644
  	int pad = menu_pad();
  	/* A rule is 2px of bar plus the gap the heading's rule gets below it, so
  	 * the footer sits off the list by the same amount the first row sits off
-@@ -6637,7 +7073,7 @@ static bool stats_screen(app *a)
+@@ -6637,7 +7149,7 @@ static bool stats_screen(app *a)
  					 * written for a mode that enters, shipped to one that
  					 * does not, and the lesson recorded was that three UI
  					 * directions are three code paths. */
@@ -913,7 +998,7 @@ index 6ae0cad..fdb0090 100644
  						cf_reset(&a->cf_sys, a->sys_cursor);
  						cf_reset(&a->view[si].cf, a->view[si].cursor);
  					} else {
-@@ -6766,8 +7202,9 @@ static void about_screen(app *a)
+@@ -6766,8 +7278,9 @@ static void about_screen(app *a)
   * follows UI Direction, because which axis moves is what that setting does. */
  static ctl_dir controls_dir(void)
  {
@@ -925,7 +1010,7 @@ index 6ae0cad..fdb0090 100644
  	return CTL_HORIZONTAL;
  }
  
-@@ -7078,6 +7515,50 @@ static int sysmenu_build(void *ctx, menu_row *rows, int max,
+@@ -7078,6 +7591,50 @@ static int sysmenu_build(void *ctx, menu_row *rows, int max,
  	return n > max ? max : n;
  }
  
@@ -976,7 +1061,7 @@ index 6ae0cad..fdb0090 100644
  /* Left and right cycle the value on a row that has one; A opens whatever the
   * row leads to. Everything else the runner has already dealt with. */
  static menu_result sysmenu_key(app *a, void *ctx, in_button key, int sel)
-@@ -7154,38 +7635,7 @@ static menu_result sysmenu_key(app *a, void *ctx, in_button key, int sel)
+@@ -7154,38 +7711,7 @@ static menu_result sysmenu_key(app *a, void *ctx, in_button key, int sel)
  		 * to sit in the old order is not. On Muse's shelf the same goes for
  		 * the album, whose folder is its `file`. */
  		if (d && sel == SM_SORT) {
@@ -1016,7 +1101,7 @@ index 6ae0cad..fdb0090 100644
  			return MENU_STAY;
  		}
  		if (key != IN_ACCEPT) return MENU_STAY;
-@@ -7237,10 +7687,11 @@ static menu_result sysmenu_key(app *a, void *ctx, in_button key, int sel)
+@@ -7237,10 +7763,11 @@ static menu_result sysmenu_key(app *a, void *ctx, in_button key, int sel)
  	 * is rebuilt: the panel's cached width is measured from font metrics, and
  	 * any card generated for a game with no box art has its title baked in at
  	 * the old size. Both are dropped here rather than left subtly wrong. */
@@ -1032,7 +1117,7 @@ index 6ae0cad..fdb0090 100644
  	 *
  	 * Themes the systems shelf today. The name is deliberately wider than
  	 * that, so menu colors or the accent rule can join without the row having
-@@ -7250,6 +7701,8 @@ static menu_result sysmenu_key(app *a, void *ctx, in_button key, int sel)
+@@ -7250,6 +7777,8 @@ static menu_result sysmenu_key(app *a, void *ctx, in_button key, int sel)
  
  		if (k != g_cards) {
  			g_cards = k;
@@ -1041,7 +1126,7 @@ index 6ae0cad..fdb0090 100644
  			free_all_textures(a);
  			prime_sys_window(a);
  			db_set_str(db_dev(), "cards", CARD_SETS[g_cards].id);
-@@ -7299,6 +7752,8 @@ static menu_result sysmenu_key(app *a, void *ctx, in_button key, int sel)
+@@ -7299,6 +7828,8 @@ static menu_result sysmenu_key(app *a, void *ctx, in_button key, int sel)
  	case PM_BT:           bt_screen(a); break;
  	case PM_CLOCK:        clock_screen(a); break;
  	case PM_STATS:        if (stats_screen(a)) return MENU_DONE; break;
@@ -1050,7 +1135,7 @@ index 6ae0cad..fdb0090 100644
  	case PM_CONTROLS:     controls_screen(a); break;
  	case PM_ABOUT:        about_screen(a); break;
  	default: break;
-@@ -7324,6 +7779,10 @@ static void tortos_menu_for(app *a, int screen)
+@@ -7324,6 +7855,10 @@ static void tortos_menu_for(app *a, int screen)
  	};
  
  	menu_run(a, &st, sysmenu_build, sysmenu_key, &c);
@@ -1061,7 +1146,7 @@ index 6ae0cad..fdb0090 100644
  }
  
  static void tortos_menu(app *a)
-@@ -7673,6 +8132,7 @@ static int gm_build(app *a, menu_row *out, gm_bufs *b)
+@@ -7673,6 +8208,7 @@ static int gm_build(app *a, menu_row *out, gm_bufs *b)
  	gm_ui u;
  
  	u.dmode  = DMODES[a->view[a->sys_cursor].dmode].label;
@@ -1069,7 +1154,7 @@ index 6ae0cad..fdb0090 100644
  	u.earned = chv_earned();
  	u.total  = chv_count();
  	return gm_rows(&u, out, b);
-@@ -8259,6 +8719,7 @@ static unsigned np_draw(app *a, const mu_now *mn, const char *next)
+@@ -8259,6 +8795,7 @@ static unsigned np_draw(app *a, const mu_now *mn, const char *next)
  	/* A book played to its end says so, rather than that it stopped. */
  	if (mn->state == MU_STOPPED && book >= 0 && g_book_done && g_book_done[book])
  		state = "Finished";
@@ -1077,7 +1162,7 @@ index 6ae0cad..fdb0090 100644
  
  	SDL_SetRenderDrawColor(r, UI_BG_R, UI_BG_G, UI_BG_B, 255);
  	SDL_RenderClear(r);
-@@ -8420,13 +8881,55 @@ static bool lock_allowed(void)
+@@ -8420,13 +8957,55 @@ static bool lock_allowed(void)
  	return musec_playing() && !g_muse_over;
  }
  
@@ -1134,7 +1219,7 @@ index 6ae0cad..fdb0090 100644
  	if (in_repeat(in, IN_VOLUP)) plat_volume_nudge(+1);
  	if (in_repeat(in, IN_VOLDN)) plat_volume_nudge(-1);
  	if (in->down[IN_BRIGHTUP] && in->down[IN_BRIGHTDN]) {
-@@ -8440,11 +8943,15 @@ static bool muse_keys(app *a)
+@@ -8440,11 +9019,15 @@ static bool muse_keys(app *a)
  	return false;
  }
  
@@ -1152,7 +1237,7 @@ index 6ae0cad..fdb0090 100644
  	plat_backlight(false);
  	plat_input_flush();
  	memset(&a->in, 0, sizeof a->in);
-@@ -8452,6 +8959,19 @@ static void muse_locked(app *a)
+@@ -8452,6 +9035,19 @@ static void muse_locked(app *a)
  		muse_screen_poll();
  		plat_input_poll(&a->in);
  		if (a->in.quit_requested) { a->running = false; break; }
@@ -1172,7 +1257,7 @@ index 6ae0cad..fdb0090 100644
  		/* Power, or Auto Off once the music has stopped long enough. The
  		 * light first, so the power-off animation is seen. */
  		if (a->in.pressed[IN_POWER] || idle_due(a)) {
-@@ -8470,6 +8990,47 @@ static void muse_locked(app *a)
+@@ -8470,6 +9066,47 @@ static void muse_locked(app *a)
  	memset(&a->in, 0, sizeof a->in);
  }
  
@@ -1220,7 +1305,7 @@ index 6ae0cad..fdb0090 100644
  /* MENU, from any Muse screen: Muse's own menu, the one its shelf has always
   * had. One button, one meaning, wherever in Muse it is pressed - it used to
   * close Muse from Now Playing and the tracks, and open this on the shelf.
-@@ -8510,6 +9071,11 @@ static muse_exit muse_now_screen(app *a)
+@@ -8510,6 +9147,11 @@ static muse_exit muse_now_screen(app *a)
  	} shown, drawn;
  	unsigned due = 0;
  	muse_exit how = MUSE_BACK;
@@ -1232,7 +1317,7 @@ index 6ae0cad..fdb0090 100644
  
  	mq_reset(MQ_NP);
  	memset(&drawn, 0, sizeof drawn);
-@@ -8521,7 +9087,7 @@ static muse_exit muse_now_screen(app *a)
+@@ -8521,7 +9163,7 @@ static muse_exit muse_now_screen(app *a)
  		const char *nt;
  		char next[128] = "";
  		unsigned now;
@@ -1241,7 +1326,7 @@ index 6ae0cad..fdb0090 100644
  		int b;
  
  		muse_screen_poll();
-@@ -8536,9 +9102,59 @@ static muse_exit muse_now_screen(app *a)
+@@ -8536,9 +9178,59 @@ static muse_exit muse_now_screen(app *a)
  			how = muse_menu(a);
  			if (how != MUSE_BACK) break;
  			memset(&drawn, 0, sizeof drawn);     /* the menu drew over it */
@@ -1301,7 +1386,7 @@ index 6ae0cad..fdb0090 100644
  		/* A, and only A. X did the same thing here and pausing in the list,
  		 * which made one button mean two things a screen apart; it is left
  		 * free in Muse for something that needs it. Eric's call, 2026-09-19. */
-@@ -8553,10 +9169,15 @@ static muse_exit muse_now_screen(app *a)
+@@ -8553,10 +9245,15 @@ static muse_exit muse_now_screen(app *a)
  		if (in_repeat(&a->in, IN_R1))       musec_next();
  		if (in_repeat(&a->in, IN_LEFT))     musec_seek_by(-seek_step(&a->in, IN_LEFT));
  		if (in_repeat(&a->in, IN_RIGHT))    musec_seek_by(+seek_step(&a->in, IN_RIGHT));
@@ -1318,7 +1403,7 @@ index 6ae0cad..fdb0090 100644
  			continue;
  		}
  
-@@ -8629,6 +9250,19 @@ static int muse_playing_album(int *row)
+@@ -8629,6 +9326,19 @@ static int muse_playing_album(int *row)
  	const char *t = musec_track(musec_now()->index);
  	int al = ml_album_of(&g_muse, t), i;
  
@@ -1338,7 +1423,7 @@ index 6ae0cad..fdb0090 100644
  	if (row) *row = 0;
  	if (al < 0) return -1;
  	if (row)
-@@ -8754,9 +9388,13 @@ static muse_exit muse_tracks(app *a, int album, bool now)
+@@ -8754,9 +9464,13 @@ static muse_exit muse_tracks(app *a, int album, bool now)
  						paths[i] = g_muse.tracks[al->first + i].path;
  					/* A book's file from its start: choosing one is choosing
  					 * where to listen from, and the place moves with it. */
@@ -1353,7 +1438,7 @@ index 6ae0cad..fdb0090 100644
  					free(paths);
  				}
  			}
-@@ -8811,7 +9449,8 @@ static bool muse_open(app *a, const menu_style *over, void *ctx)
+@@ -8811,7 +9525,8 @@ static bool muse_open(app *a, const menu_style *over, void *ctx)
  	g_muse_over = over;
  	g_muse_over_ctx = ctx;
  	g_muse_gone = false;
@@ -1363,7 +1448,7 @@ index 6ae0cad..fdb0090 100644
  	g_muse_over = NULL;
  	g_muse_over_ctx = NULL;
  	/* Nothing Muse did closes the menu it may have been opened over. */
-@@ -8852,6 +9491,9 @@ static muse_exit muse_album(app *a, const sysview *v, int k)
+@@ -8852,6 +9567,9 @@ static muse_exit muse_album(app *a, const sysview *v, int k)
  	return muse_tracks(a, v->album[k], false);
  }
  
@@ -1373,7 +1458,7 @@ index 6ae0cad..fdb0090 100644
  /* Muse's shelf again after its menu, whose Rescan Folder rebuilds every view
   * on the card, so the view being held is found again rather than trusted.
   * NULL when there is no Muse left to show. */
-@@ -8901,13 +9543,12 @@ static int muse_card_of(const sysview *v, int album)
+@@ -8901,13 +9619,12 @@ static int muse_card_of(const sysview *v, int album)
  static void muse_shelf_screen(app *a, bool now)
  {
  	int prev_screen = a->screen, prev_sys = a->sys_cursor;
@@ -1389,7 +1474,7 @@ index 6ae0cad..fdb0090 100644
  	for (i = 0; i < a->sys.count; i++)
  		if (is_muse(&a->sys.systems[i])) { muse = i; break; }
  	if (muse < 0 || a->view[muse].list.count <= 0) return;
-@@ -9014,6 +9655,11 @@ static int muse_artist_of(int al)
+@@ -9014,6 +9731,11 @@ static int muse_artist_of(int al)
  
  static void muse_album_dir(int al, char *out, size_t n)
  {
@@ -1401,7 +1486,7 @@ index 6ae0cad..fdb0090 100644
  	const char *p = g_muse.albums[al].n > 0 ? g_muse.tracks[g_muse.albums[al].first].path : "";
  	const char *slash = strrchr(p, '/');
  
-@@ -9041,7 +9687,7 @@ static int museart_jobs(museart_job *jobs, int max)
+@@ -9041,7 +9763,7 @@ static int museart_jobs(museart_job *jobs, int max)
  		 * own file or the picture in its folder. Nor Singles, which is no
  		 * record at all and has its own cover. */
  		if (g_muse.albums[i].n <= 0 || g_muse.albums[i].book ||
@@ -1410,7 +1495,7 @@ index 6ae0cad..fdb0090 100644
  		muse_album_dir(i, dir, sizeof dir);
  		snprintf(key, sizeof key, "museart.%s", dir);
  		ml_cover_base(g_muse_root, &g_muse, i, j->base, sizeof j->base);
-@@ -9447,6 +10093,7 @@ static int gm_width(app *a)
+@@ -9447,6 +10169,7 @@ static int gm_width(app *a)
  	int w = 0, k;
  
  	gm_build(a, rows, &b);
@@ -1418,7 +1503,7 @@ index 6ae0cad..fdb0090 100644
  	for (k = 0; k < DMODE_COUNT; k++) {
  		int mw;
  		rows[GM_DISPLAY].value = DMODES[k].label;
-@@ -9514,6 +10161,17 @@ static menu_result gm_key(app *a, void *ctx, in_button key, int sel)
+@@ -9514,6 +10237,17 @@ static menu_result gm_key(app *a, void *ctx, in_button key, int sel)
  		gm_cycle_display(a, key == IN_RIGHT ? 1 : -1);
  		return MENU_STAY;
  	}
@@ -1436,7 +1521,7 @@ index 6ae0cad..fdb0090 100644
  	if (key != IN_ACCEPT) return MENU_STAY;
  
  	switch ((gm_row)sel) {
-@@ -9693,6 +10351,7 @@ static void respawn_resident(app *a)
+@@ -9693,6 +10427,7 @@ static void respawn_resident(app *a)
  
  static void launch(app *a)
  {
@@ -1444,7 +1529,7 @@ index 6ae0cad..fdb0090 100644
  	sysview *v = &a->view[a->sys_cursor];
  	/* The game's system, not the shelf's. Launching a favorite off the
  	 * Favorites shelf otherwise loads whatever core the shelf claims, which
-@@ -10003,6 +10662,8 @@ static void launch(app *a)
+@@ -10003,6 +10738,8 @@ static void launch(app *a)
  		 * the display, so this side tears its own down first. */
  		anim_launch(a, 190);
  		free_all_textures(a);
@@ -1453,7 +1538,7 @@ index 6ae0cad..fdb0090 100644
  		ui_quit();
  		plat_input_quit();
  		plat_video_quit();
-@@ -10048,6 +10709,8 @@ static void launch(app *a)
+@@ -10048,6 +10785,8 @@ static void launch(app *a)
  		if (!plat_video_init() || !plat_input_init()) { a->running = false; return; }
  		a->r = plat_renderer();
  		ui_init(a->r, P_FONT);
@@ -1462,7 +1547,7 @@ index 6ae0cad..fdb0090 100644
  		a->menu_w = 0;   /* fonts reopened: remeasure the panel */
  		prime_sys_window(a);
  		prime_window(a, a->sys_cursor);
-@@ -10126,6 +10789,9 @@ static void enter_system(app *a)
+@@ -10126,6 +10865,9 @@ static void enter_system(app *a)
  	 * own A - see update_games. */
  	if (v->list.count == 0) return;
  	a->screen = SCREEN_GAMES;
@@ -1472,7 +1557,7 @@ index 6ae0cad..fdb0090 100644
  	cf_reset(&v->cf, v->cursor);
  	prime_window(a, a->sys_cursor);
  }
-@@ -10233,10 +10899,13 @@ static void update_systems(app *a)
+@@ -10233,10 +10975,13 @@ static void update_systems(app *a)
  	 * the first system at the bottom, the last at the top, so up advances.
  	 * Down-is-next is the convention for a list on a page; a stack is read
  	 * from the bottom, and this shelf is a stack. */
@@ -1488,7 +1573,7 @@ index 6ae0cad..fdb0090 100644
  	if (in_repeat(&a->in, back)) { a->sys_cursor = (a->sys_cursor - 1 + n) % n; dir = -1; }
  	if (in_repeat(&a->in, fwd))  { a->sys_cursor = (a->sys_cursor + 1) % n; dir = +1; }
  	if (dir) load_ahead(a);
-@@ -10314,10 +10983,19 @@ static int shelf_letter_jump(sysview *v, int dir)
+@@ -10314,10 +11059,19 @@ static int shelf_letter_jump(sysview *v, int dir)
  	return shelf_group_start(v, i);
  }
  
@@ -1508,7 +1593,7 @@ index 6ae0cad..fdb0090 100644
  	if (n <= 0) { a->screen = SCREEN_SYSTEMS; return; }
  	/* MUSE HAS ONE DOOR. Its card used to open its shelf HERE, in the main
  	 * loop, as if it were a console: a second Muse beside the one SELECT
-@@ -10335,21 +11013,23 @@ static void update_games(app *a)
+@@ -10335,21 +11089,23 @@ static void update_games(app *a)
  	 * reassigned onto the other: stepping always runs along the row, and the
  	 * letter jump always runs across it. Turning the shelf turns the d-pad
  	 * with it and nothing is left doing two jobs. */
@@ -1537,7 +1622,7 @@ index 6ae0cad..fdb0090 100644
  	/* HERE, AND NOT AT THE END OF THE PASS, because four of the handlers below
  	 * return without reaching the end.
  	 *
-@@ -10392,7 +11072,14 @@ static void update_games(app *a)
+@@ -10392,7 +11148,14 @@ static void update_games(app *a)
  		refresh_favorites_shelf(a);
  		return;
  	}
@@ -1553,7 +1638,7 @@ index 6ae0cad..fdb0090 100644
  }
  
  /* ---------- main ---------------------------------------------------------- */
-@@ -10609,6 +11296,7 @@ static void refresh_favorites_shelf(app *a)
+@@ -10609,6 +11372,7 @@ static void refresh_favorites_shelf(app *a)
  {
  	/* Favorites is rebuilt in place, so its indices now name other games. */
  	texload_bump();
@@ -1561,7 +1646,7 @@ index 6ae0cad..fdb0090 100644
  	char tag[sizeof a->sys.systems[0].tag];
  	int cur, i, order = 0;
  
-@@ -10691,11 +11379,22 @@ static void muse_order_view(sysview *v)
+@@ -10691,11 +11455,22 @@ static void muse_order_view(sysview *v)
  	if (!v->album) return;
  	v->list.count = ml_shelf_order(&g_muse, (ml_order)v->sort, muse_books_shown(),
  	                               v->album);
@@ -1585,7 +1670,7 @@ index 6ae0cad..fdb0090 100644
  		snprintf(e->title, sizeof e->title, "%s", g_muse.albums[al].name);
  		muse_album_dir(al, e->file, sizeof e->file);
  	}
-@@ -10743,8 +11442,12 @@ static void muse_tidy_singles(void)
+@@ -10743,8 +11518,12 @@ static void muse_tidy_singles(void)
  	 * allowed to show or skip entries. */
  	while ((e = readdir(d))) {
  		if (e->d_name[0] == '.' || !ml_is_audio(e->d_name)) continue;
@@ -1599,7 +1684,7 @@ index 6ae0cad..fdb0090 100644
  		    strlen(e->d_name) >= sizeof loose[0])
  			continue;
  		if (nloose == cap) {
-@@ -10823,7 +11526,7 @@ static void flat_albums_find(void)
+@@ -10823,7 +11602,7 @@ static void flat_albums_find(void)
  		const ml_album *al = &g_muse.albums[i];
  		const char *p, *slash;
  
@@ -1608,7 +1693,7 @@ index 6ae0cad..fdb0090 100644
  		p = g_muse.tracks[al->first].path;            /* Music/<album>/<track> */
  		if (strncmp(p, "Music/", 6) || !(slash = strchr(p + 6, '/')) ||
  		    strchr(slash + 1, '/'))
-@@ -10955,6 +11658,7 @@ static void build_muse_shelf(app *a)
+@@ -10955,6 +11734,7 @@ static void build_muse_shelf(app *a)
  	 * different album at every index. */
  	g_muse_gen++;
  	g_nflat = 0;
@@ -1616,7 +1701,7 @@ index 6ae0cad..fdb0090 100644
  	ml_free(&g_muse);
  	free(g_cov);
  	g_cov = NULL;
-@@ -11185,6 +11889,14 @@ static const char *shot_kb_text = "correct horse";
+@@ -11185,6 +11965,14 @@ static const char *shot_kb_text = "correct horse";
  static const char *shot_kb_title = "Wi-Fi password";
  static int shot_slots, shot_slot_sel;
  static int shot_jump;               /* letter-jumps to apply before drawing */
@@ -1631,7 +1716,7 @@ index 6ae0cad..fdb0090 100644
  /* --nowplaying ALBUM [TRACK [SECONDS]], and --paused with it. */
  static int   shot_np = -1, shot_np_track, shot_np_paused;
  static float shot_np_at = 83.0f;
-@@ -11346,6 +12058,7 @@ static void take_shot(app *a)
+@@ -11346,6 +12134,7 @@ static void take_shot(app *a)
  		menu_draw(a, head, rows, n, -1, menu_std_width(a), MENU_ACCENT);
  	}
  	if (shot_np >= 0) np_shot(a);
@@ -1639,7 +1724,7 @@ index 6ae0cad..fdb0090 100644
  	if (shot_art)
  		art_preview(a, shot_art_now, "4 of 10 systems",
  		            "37 found, 2 missing, 61 already", true);
-@@ -11528,6 +12241,11 @@ int main(int argc, char *argv[])
+@@ -11528,6 +12317,11 @@ int main(int argc, char *argv[])
  		else if (!strcmp(argv[i], "--gamemove") && i + 1 < argc)
  			shot_gamemove = (float)atof(argv[++i]);
  		else if (!strcmp(argv[i], "--info")) shot_info = 1;
@@ -1651,7 +1736,7 @@ index 6ae0cad..fdb0090 100644
  		else if (!strcmp(argv[i], "--controls")) {
  			shot_controls = 0;
  			if (i + 1 < argc && argv[i + 1][0] >= '0' && argv[i + 1][0] <= '9')
-@@ -11921,6 +12639,7 @@ int main(int argc, char *argv[])
+@@ -11921,6 +12715,7 @@ int main(int argc, char *argv[])
  			 * cover it would ask for is drawn as missing instead - see
  			 * muse_covers_settle. */
  			musec_init(shot_path ? "" : bin, music);
@@ -1659,7 +1744,7 @@ index 6ae0cad..fdb0090 100644
  			musec_on_before_heard(aout_before_muse);
  		}
  		/* The play mode the player left it in. */
-@@ -11954,10 +12673,11 @@ int main(int argc, char *argv[])
+@@ -11954,10 +12749,11 @@ int main(int argc, char *argv[])
  	 * The card settings are only read by drawing, which comes long after. */
  	{
  		char set[CFG_STR];
@@ -1672,7 +1757,7 @@ index 6ae0cad..fdb0090 100644
  	}
  	a.sys_cursor = 0;
  	db_get_str(db_lib(), "startup_system", startup, sizeof startup, "");
-@@ -12028,6 +12748,8 @@ int main(int argc, char *argv[])
+@@ -12028,6 +12824,8 @@ int main(int argc, char *argv[])
  	 * saved brightness does. Read before ui_init, which is when the scale is
  	 * applied. */
  	if (!ui_init(a.r, P_FONT)) fprintf(stderr, "font init failed\n");
@@ -1681,7 +1766,7 @@ index 6ae0cad..fdb0090 100644
  	t_mark("font+settings");
  
  	/* The system cards asked for before the display came up, installed so the
-@@ -12044,6 +12766,20 @@ int main(int argc, char *argv[])
+@@ -12044,6 +12842,20 @@ int main(int argc, char *argv[])
  
  	if (shot_path) {
  		if (shot_screen >= 0) a.screen = (screen_id)shot_screen;
@@ -1702,7 +1787,7 @@ index 6ae0cad..fdb0090 100644
  		if (shot_jump) {
  			sysview *v = &a.view[a.sys_cursor];
  			int k, dir = shot_jump > 0 ? 1 : -1;
-@@ -12230,7 +12966,7 @@ int main(int argc, char *argv[])
+@@ -12230,7 +13042,7 @@ int main(int argc, char *argv[])
  		 * MENU opens in a game. It draws over the shelf and returns here.
  		 * Both handles its own, because there MENU and B mean two different
  		 * menus and the screen cannot say which. */
@@ -1711,7 +1796,26 @@ index 6ae0cad..fdb0090 100644
  			update_both(&a);
  		} else {
  			if (a.in.pressed[IN_MENU]) { tortos_menu(&a); continue; }
-@@ -12277,6 +13013,8 @@ done:
+@@ -12258,6 +13070,18 @@ int main(int argc, char *argv[])
+ 				render(&a);
+ 				if (!last_render) t_mark("first frame");
+ 				last_render = plat_now_ms();
++				/* The boot animation, once the shelf is up: a second's
++				 * write, so never while the player waits for the first
++				 * frame. */
++				{
++					static unsigned splash_at;
++
++					if (!splash_at) splash_at = last_render + 4000;
++					else if (splash_at != 1 && last_render >= splash_at) {
++						splash_at = 1;
++						zune_splash_sync();
++					}
++				}
+ 			} else {
+ 				SDL_Delay(IDLE_POLL_MS);
+ 			}
+@@ -12277,6 +13101,8 @@ done:
  		free(a.view[i].tex); free(a.view[i].tw); free(a.view[i].th);
  		lib_free(&a.view[i].list);
  	}
@@ -1721,7 +1825,7 @@ index 6ae0cad..fdb0090 100644
  	IMG_Quit();
  	plat_input_quit();
 diff --git a/src/muselib.c b/src/muselib.c
-index 8f7bb21..635227e 100644
+index 8f7bb21..0d5b17b 100644
 --- a/src/muselib.c
 +++ b/src/muselib.c
 @@ -287,12 +287,22 @@ static void list_dir(const char *dir, names *dirs, names *files)
@@ -1749,6 +1853,134 @@ index 8f7bb21..635227e 100644
  		else if (files && ml_is_audio(e->d_name)) names_add(files, e->d_name);
  	}
  	closedir(d);
+@@ -346,6 +356,93 @@ static void add_album(ml_lib *l, int *acap, int *tcap, bool book,
+ 	}
+ }
+ 
++void ml_primary_artist(const char *name, char *out, size_t n)
++{
++	static const char *const FEAT[] = {
++		" feat. ", " feat ", " ft. ", " ft ", " featuring ", " (feat", " [feat",
++		" (ft.", " [ft.", " (ft ", " (featuring", " [featuring", NULL
++	};
++	size_t cut = strlen(name), len;
++	int i;
++
++	for (i = 0; FEAT[i]; i++) {
++		const char *p = strcasestr(name, FEAT[i]);
++
++		if (p && (size_t)(p - name) < cut) cut = (size_t)(p - name);
++	}
++	while (cut && (name[cut - 1] == ' ' || name[cut - 1] == ',' || name[cut - 1] == '-'))
++		cut--;
++	if (!cut) cut = strlen(name);                 /* "feat. Someone" alone: as it is */
++	len = cut < n ? cut : n - 1;
++	memcpy(out, name, len);
++	out[len] = '\0';
++}
++
++/* The artists scanned from `a0` on, with their albums from `al0`, folded so
++ * an act with someone featured is the act: "The Beatles feat. Johnny"'s
++ * albums join the Beatles', who keep their place in the list. One with no
++ * folder of its own ("Drake ft. Rihanna" alone) is shown as "Drake". The
++ * albums move to stay together under their artist; the tracks do not move,
++ * since an album names its tracks by index. */
++static void merge_featured(ml_lib *l, int a0, int al0)
++{
++	int na = l->nartists - a0, i, j, k, nn = 0, at = al0;
++	char (*key)[128] = NULL;
++	int *lead = NULL;
++	ml_album *albums = NULL;
++	ml_artist *artists = NULL;
++	bool any = false;
++
++	if (na < 2) return;
++	key = calloc((size_t)na, sizeof *key);
++	lead = malloc((size_t)na * sizeof *lead);
++	if (!key || !lead) goto out;
++	for (i = 0; i < na; i++) {
++		char *p;
++
++		ml_primary_artist(l->artists[a0 + i].name, key[i], sizeof key[i]);
++		for (p = key[i]; *p; p++) *p = (char)tolower((unsigned char)*p);
++		lead[i] = i;
++		for (j = 0; j < i; j++)
++			if (lead[j] == j && !strcmp(key[j], key[i])) { lead[i] = j; any = true; break; }
++	}
++	if (!any) goto out;
++	albums = malloc((size_t)(l->nalbums - al0) * sizeof *albums);
++	artists = malloc((size_t)na * sizeof *artists);
++	if (!albums || !artists) goto out;
++	for (i = 0; i < na; i++) {
++		ml_artist *ar;
++		bool plain = false;
++
++		if (lead[i] != i) continue;
++		ar = &artists[nn++];
++		*ar = l->artists[a0 + i];
++		ar->first = at;
++		ar->n = 0;
++		for (j = i; j < na; j++) {
++			const ml_artist *m = &l->artists[a0 + j];
++
++			if (lead[j] != i) continue;
++			for (k = 0; k < m->n; k++) albums[at - al0 + ar->n++] = l->albums[m->first + k];
++			/* The act's own folder names it, as it is written there. */
++			if (!plain && strlen(m->name) == strlen(key[i])) {
++				snprintf(ar->name, sizeof ar->name, "%s", m->name);
++				plain = true;
++			}
++		}
++		if (!plain) ml_primary_artist(l->artists[a0 + i].name, ar->name, sizeof ar->name);
++		at += ar->n;
++	}
++	memcpy(&l->albums[al0], albums, (size_t)(at - al0) * sizeof *albums);
++	memcpy(&l->artists[a0], artists, (size_t)nn * sizeof *artists);
++	l->nartists = a0 + nn;
++out:
++	free(key);
++	free(lead);
++	free(albums);
++	free(artists);
++}
++
+ /* How far each array has grown, across the folders one library is read from. */
+ typedef struct { int a, t, r; } caps;
+ 
+@@ -355,7 +452,7 @@ static bool scan_into(ml_lib *out, caps *c, const char *root, const char *prefix
+                       bool book)
+ {
+ 	names top = { 0 };
+-	int i;
++	int i, a0 = out->nartists, al0 = out->nalbums;
+ 	struct stat st;
+ 
+ 	if (stat(root, &st) != 0 || !S_ISDIR(st.st_mode)) return false;
+@@ -409,6 +506,7 @@ static bool scan_into(ml_lib *out, caps *c, const char *root, const char *prefix
+ 		ar->book = book;
+ 	}
+ 	names_free(&top);
++	if (!book) merge_featured(out, a0, al0);
+ 	return true;
+ }
+ 
+diff --git a/src/muselib.h b/src/muselib.h
+index 4ad477e..23d3d56 100644
+--- a/src/muselib.h
++++ b/src/muselib.h
+@@ -52,6 +52,12 @@ typedef struct {
+ 
+ /* Scan `root`. False only when the folder is not there; an empty folder is an
+  * empty library and true. `path` in each track is relative to `root`. */
++/* An artist as credited, less who is featured: "The Beatles feat. Johnny",
++ * "Drake ft. Rihanna", "Calvin Harris (featuring Ellie Goulding)" are the
++ * Beatles, Drake and Calvin Harris. Nothing else is split - "Simon &
++ * Garfunkel" and "Crosby, Stills, Nash & Young" are one act each. */
++void ml_primary_artist(const char *name, char *out, size_t n);
++
+ bool ml_scan(const char *root, ml_lib *out);
+ 
+ /* Both of a card's folders into one library: <card>/Music, then
 diff --git a/src/sys_menu.c b/src/sys_menu.c
 index 666711e..305db00 100644
 --- a/src/sys_menu.c
@@ -5391,6 +5623,77 @@ index 5917c7a..06ed9c5 100644
  	ck(!strcmp(rows[GM_CONTINUE].label, "Continue"), "Continue leads");
  	ck(!strcmp(val(&rows[GM_DISPLAY]), "Native"), "Display carries the mode");
  	ck(!strcmp(val(&rows[GM_CHEEVOS]), "12 / 40"), "Cheevos counts the set");
+diff --git a/tools/muselib-check.c b/tools/muselib-check.c
+index 5114799..3164366 100644
+--- a/tools/muselib-check.c
++++ b/tools/muselib-check.c
+@@ -393,6 +393,58 @@ static void resolve(void)
+ 	}
+ }
+ 
++/* An act with someone featured is the act. */
++static void featured(void)
++{
++	static const char *const cases[][2] = {
++		{ "The Beatles feat. Johnny", "The Beatles" }, { "Drake ft. Rihanna", "Drake" },
++		{ "Calvin Harris (featuring Ellie Goulding)", "Calvin Harris" },
++		{ "Mark Ronson Feat Bruno Mars", "Mark Ronson" }, { "Simon & Garfunkel", "Simon & Garfunkel" },
++		{ "Crosby, Stills, Nash & Young", "Crosby, Stills, Nash & Young" },
++		{ "feat. Nobody", "feat. Nobody" }, { "Lefty", "Lefty" },
++	};
++	ml_lib l;
++	char out[128], path[512];
++	int i, beatles = -1, drake = -1;
++
++	printf("an act with someone featured is the act\n");
++	for (i = 0; i < (int)(sizeof cases / sizeof cases[0]); i++) {
++		ml_primary_artist(cases[i][0], out, sizeof out);
++		CHECK(!strcmp(out, cases[i][1]), "\"%s\" is \"%s\", not \"%s\"", cases[i][0], cases[i][1], out);
++	}
++	dir("f");
++	snprintf(path, sizeof path, "f/The Beatles");                 dir(path);
++	dir("f/The Beatles/Abbey Road");      touch("f/The Beatles/Abbey Road/01 Come Together.mp3");
++	dir("f/The Beatles feat. Johnny");    dir("f/The Beatles feat. Johnny/One Night");
++	touch("f/The Beatles feat. Johnny/One Night/01 Song.mp3");
++	dir("f/Blur");                        dir("f/Blur/Parklife");
++	touch("f/Blur/Parklife/01 Girls And Boys.mp3");
++	dir("f/Drake ft. Rihanna");           dir("f/Drake ft. Rihanna/Take Care");
++	touch("f/Drake ft. Rihanna/Take Care/01 Take Care.mp3");
++	snprintf(path, sizeof path, "%s/f", root);
++	CHECK(ml_scan(path, &l), "the folder scans");
++	CHECK(l.nartists == 3, "three artists, not four: %d", l.nartists);
++	for (i = 0; i < l.nartists; i++) {
++		if (!strcmp(l.artists[i].name, "The Beatles")) beatles = i;
++		if (!strcmp(l.artists[i].name, "Drake")) drake = i;
++	}
++	CHECK(beatles >= 0 && l.artists[beatles].n == 2, "the Beatles have both albums");
++	CHECK(drake >= 0 && l.artists[drake].n == 1, "Drake with no folder of his own is Drake");
++	for (i = 0; i < l.nartists; i++) {
++		const ml_artist *a = &l.artists[i];
++		int k;
++
++		for (k = 0; k < a->n; k++) {
++			const ml_album *al = &l.albums[a->first + k];
++
++			CHECK(al->n == 1 && al->first >= 0 && al->first < l.ntracks,
++			      "%s's album %s still names its track", a->name, al->name);
++		}
++	}
++	CHECK(l.nalbums == 4 && l.ntracks == 4, "every album and track kept");
++	ml_free(&l);
++}
++
+ int main(void)
+ {
+ 	char cmd[300];
+@@ -406,6 +458,7 @@ int main(void)
+ 	orders();
+ 	card();
+ 	resolve();
++	featured();
+ 
+ 	snprintf(cmd, sizeof cmd, "rm -rf '%s'", root);
+ 	if (system(cmd) != 0) { }
 -- 
 2.43.0
 

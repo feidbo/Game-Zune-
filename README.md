@@ -85,6 +85,16 @@ the time (see [Sources](#sources)):
   or without music - the same as the pocket lock (only MENU wakes it, the music keeps playing,
   it goes dark again 10 seconds after a wake unless you press something). With nothing playing,
   Auto Off turns the Pixel 2 off after its usual time.
+- **Featured artists count as the artist:** a song by "The Beatles feat. Johnny" is listed under
+  **The Beatles**, with their other albums - only "feat.", "ft." and "featuring" are split off, so
+  "Simon & Garfunkel" stays one act. The Windows app also files new songs that way.
+- **A Zune boot animation:** at power-on a bloom of the Zune's colors gathers into the white
+  "zune" wordmark (`TortOS/zune-splash.bin`, made by `scripts/make_zune_splash.py`). The Zune
+  launcher puts it in place of TortOS's own animation a few seconds after it first starts - so you
+  see it from the *next* power-on - and keeps TortOS's beside it (and as `TortOS/splash.stock.bin`
+  on the card). Switching the UI Theme away from Zune puts TortOS's animation back.
+
+  ![zune boot animation](docs/screenshots/zune-splash.gif)
 - **Battery:** every Zune screen (the top menu, the zune and game boy menus, lists, Now Playing,
   settings) shows the battery beside the clock, top right. It empties as it runs down, turns
   **red at 10%** and below, and shows a **lightning bolt** while charging.
@@ -447,6 +457,9 @@ Two patches, in `tortos-zune/patches/`, each building and passing TortOS's check
      screenshot harness.
    - `src/ui.*`: switching the menus' typeface at runtime, and flat panels.
    - `src/cards.h`: *Zune* as a third UI Theme, and the default.
+   - `src/muselib.c`, `tools/muselib-check.c`: the music scan reads each folder entry's type
+     instead of a stat per file (fast on big libraries), and folds "feat." artists into the act.
+   - `src/main.c`: `zune_splash_sync`, the boot animation swap (and back), after the first frame.
    - `src/device/*.c`: `TORTOS_FAKE_BATT=40c` fakes a charging battery for screenshots; on the
      Pixel 2 the backlight goes off by both `bl_power` and a level of 0.
    - `src/sys_menu.*`, `tools/menu-check.c`: **Screen Off**, first in the settings menu.

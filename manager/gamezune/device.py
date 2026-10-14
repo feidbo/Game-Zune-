@@ -74,6 +74,9 @@ def install_theme(card):
     for n in os.listdir(os.path.join(src, "fonts")):
         _put(os.path.join(src, "fonts", n), os.path.join(t, "fonts", n))
     _put(os.path.join(src, "zune-wallpaper.jpg"), os.path.join(t, "zune-wallpaper.jpg"))
+    # The Zune boot animation, which the launcher puts in place of TortOS's.
+    if os.path.exists(os.path.join(src, "zune-splash.bin")):
+        _put(os.path.join(src, "zune-splash.bin"), os.path.join(t, "zune-splash.bin"))
     _put(os.path.join(src, "tortos.elf"), os.path.join(t, "tortos.elf"))
     notes.append("installed the Zune launcher")
     return notes

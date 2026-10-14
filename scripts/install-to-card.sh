@@ -74,6 +74,9 @@ cp "$DIST"/fonts/* "$T/fonts/"
 # The theme's own background. Yours, if you add one, is TortOS/wallpaper.jpg
 # (or .png) and is never touched here.
 put "$DIST/zune-wallpaper.jpg" "$T/zune-wallpaper.jpg"
+# The Zune boot animation: the launcher puts it in place of TortOS's on the
+# Pixel 2 (and TortOS's back when the theme is not the Zune's).
+[ -f "$DIST/zune-splash.bin" ] && put "$DIST/zune-splash.bin" "$T/zune-splash.bin"
 put "$DIST/tortos.elf" "$T/tortos.elf"
 sync
 echo "installed. Eject the card, put it in the Pixel 2 and power on."
