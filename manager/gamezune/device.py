@@ -158,6 +158,37 @@ def playlist_names():
         return []
 
 
+# ---- the device's own log ------------------------------------------------------------
+
+LOG_DIR = (".userdata", "pixel2", "logs")
+LOG_KEEP = ("boot:", "scan:", "muse:", "zune:", "error", "fail", "cannot", "could not",
+            "segfault", "killed", "signal", "abort")
+
+
+def device_log(card, tail=40):
+    """What the Pixel 2 wrote at its last two starts (tortos.log, and
+    tortos.log.1 from the start before): how long each boot step took, what
+    the scans found, anything that went wrong, and how each one ended."""
+    out = []
+    for name, what in (("tortos.log", "the last start"), ("tortos.log.1", "the start before it")):
+        path = card.path(*LOG_DIR, name)
+        try:
+            with open(path, encoding="utf-8", errors="replace") as f:
+                lines = [ln.rstrip("\n") for ln in f]
+        except OSError:
+            out.append("%s: no log (%s)" % (what, "/".join(LOG_DIR + (name,))))
+            continue
+        out.append("==== %s: %s, %d lines" % (what, name, len(lines)))
+        keep = [ln for ln in lines if any(k in ln.lower() for k in LOG_KEEP)]
+        out += keep[:120]
+        if len(keep) > 120:
+            out.append("... %d more" % (len(keep) - 120))
+        out.append("---- how it ended (the last %d lines):" % min(tail, len(lines)))
+        out += lines[-tail:]
+        out.append("")
+    return "\n".join(out)
+
+
 # ---- ejecting ---------------------------------------------------------------------
 
 def eject(card):

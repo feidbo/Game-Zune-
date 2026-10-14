@@ -976,6 +976,7 @@ class DevicePage(Page):
         ttk.Button(b, text="update library and auto playlists", style="Accent.TButton",
                    command=self.update).pack(side="left")
         ttk.Button(b, text="eject the card", command=self.eject).pack(side="left", padx=6)
+        ttk.Button(b, text="show device log", command=self.show_log).pack(side="left")
 
         self.out = tk.Text(self, bg=PANEL, fg=DIM, insertbackground=FG, relief="flat", height=10,
                            font=("Consolas" if sys.platform == "win32" else "Courier", 9),
@@ -1000,6 +1001,17 @@ class DevicePage(Page):
 
     def shown(self):
         self.card_changed()
+
+    def show_log(self):
+        """The Pixel 2's log from its last starts - what to look at, or send,
+        when it will not start."""
+        if not self.app.need_card():
+            return
+        self.out.configure(state="normal")
+        self.out.delete("1.0", "end")
+        self.out.configure(state="disabled")
+        for line in device.device_log(self.app.card).splitlines():
+            self.log(line)
 
     def log(self, line):
         self.out.configure(state="normal")

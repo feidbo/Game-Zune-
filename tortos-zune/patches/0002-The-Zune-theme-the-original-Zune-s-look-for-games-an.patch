@@ -1,4 +1,4 @@
-From daf802555fdd38f94925bd805bc94c8645ce2d1e Mon Sep 17 00:00:00 2001
+From dd4039145de6897c3f88d24fcf304694bb454e17 Mon Sep 17 00:00:00 2001
 From: Claude <noreply@anthropic.com>
 Date: Tue, 13 Oct 2026 20:31:25 +0000
 Subject: [PATCH 2/2] The Zune theme: the original Zune's look, for games and
@@ -55,6 +55,10 @@ the Zune 30, 80 and 120, the players with buttons - drew itself.
   likes; ratings.tsv keeps the dislikes.
 - Music/.zune/library.tsv, from scripts/zunesync.py, gives real titles,
   genres, years and lengths; plays go to plays.log for it.
+- The music scan reads what each folder entry is from the entry itself
+  instead of a stat per file: on the card's exFAT each stat searched the
+  folder again, and 19,000 songs were 21,000 lookups before the first
+  frame. The same in the loose-songs tidy.
 - The fonts and the background are opened when the theme first draws,
   so the other themes pay nothing for it.
 
@@ -70,7 +74,8 @@ the theme's Controls pages.
  src/device/pixel2.c    |   19 +-
  src/game_menu.c        |    3 +-
  src/game_menu.h        |    4 +-
- src/main.c             |  882 +++++++++++++++++--
+ src/main.c             |  888 +++++++++++++++++--
+ src/muselib.c          |   14 +-
  src/sys_menu.c         |    1 +
  src/sys_menu.h         |    7 +-
  src/ui.c               |   52 ++
@@ -81,7 +86,7 @@ the theme's Controls pages.
  src/zune_music.h       | 1900 ++++++++++++++++++++++++++++++++++++++++
  tools/controls-check.c |   10 +-
  tools/menu-check.c     |    9 +-
- 18 files changed, 4376 insertions(+), 100 deletions(-)
+ 19 files changed, 4393 insertions(+), 103 deletions(-)
  create mode 100644 src/zune.c
  create mode 100644 src/zune.h
  create mode 100644 src/zune_games.h
@@ -323,7 +328,7 @@ index 6190116..1a1ece1 100644
  	int         total;    /* 0: this game has no achievement set */
  } gm_ui;
 diff --git a/src/main.c b/src/main.c
-index 6ae0cad..7922aca 100644
+index 6ae0cad..fdb0090 100644
 --- a/src/main.c
 +++ b/src/main.c
 @@ -51,6 +51,7 @@
@@ -1580,7 +1585,21 @@ index 6ae0cad..7922aca 100644
  		snprintf(e->title, sizeof e->title, "%s", g_muse.albums[al].name);
  		muse_album_dir(al, e->file, sizeof e->file);
  	}
-@@ -10823,7 +11522,7 @@ static void flat_albums_find(void)
+@@ -10743,8 +11442,12 @@ static void muse_tidy_singles(void)
+ 	 * allowed to show or skip entries. */
+ 	while ((e = readdir(d))) {
+ 		if (e->d_name[0] == '.' || !ml_is_audio(e->d_name)) continue;
++		/* A file by its entry's own word, as list_dir (src/muselib.c):
++		 * stat only when the filesystem does not say. */
+ 		if (snprintf(from, sizeof from, "%s/%s", music, e->d_name) >= (int)sizeof from ||
+-		    stat(from, &st) != 0 || !S_ISREG(st.st_mode) ||
++		    (e->d_type != DT_REG && (e->d_type != DT_UNKNOWN && e->d_type != DT_LNK)) ||
++		    ((e->d_type == DT_UNKNOWN || e->d_type == DT_LNK) &&
++		     (stat(from, &st) != 0 || !S_ISREG(st.st_mode))) ||
+ 		    strlen(e->d_name) >= sizeof loose[0])
+ 			continue;
+ 		if (nloose == cap) {
+@@ -10823,7 +11526,7 @@ static void flat_albums_find(void)
  		const ml_album *al = &g_muse.albums[i];
  		const char *p, *slash;
  
@@ -1589,7 +1608,7 @@ index 6ae0cad..7922aca 100644
  		p = g_muse.tracks[al->first].path;            /* Music/<album>/<track> */
  		if (strncmp(p, "Music/", 6) || !(slash = strchr(p + 6, '/')) ||
  		    strchr(slash + 1, '/'))
-@@ -10955,6 +11654,7 @@ static void build_muse_shelf(app *a)
+@@ -10955,6 +11658,7 @@ static void build_muse_shelf(app *a)
  	 * different album at every index. */
  	g_muse_gen++;
  	g_nflat = 0;
@@ -1597,7 +1616,7 @@ index 6ae0cad..7922aca 100644
  	ml_free(&g_muse);
  	free(g_cov);
  	g_cov = NULL;
-@@ -11185,6 +11885,14 @@ static const char *shot_kb_text = "correct horse";
+@@ -11185,6 +11889,14 @@ static const char *shot_kb_text = "correct horse";
  static const char *shot_kb_title = "Wi-Fi password";
  static int shot_slots, shot_slot_sel;
  static int shot_jump;               /* letter-jumps to apply before drawing */
@@ -1612,7 +1631,7 @@ index 6ae0cad..7922aca 100644
  /* --nowplaying ALBUM [TRACK [SECONDS]], and --paused with it. */
  static int   shot_np = -1, shot_np_track, shot_np_paused;
  static float shot_np_at = 83.0f;
-@@ -11346,6 +12054,7 @@ static void take_shot(app *a)
+@@ -11346,6 +12058,7 @@ static void take_shot(app *a)
  		menu_draw(a, head, rows, n, -1, menu_std_width(a), MENU_ACCENT);
  	}
  	if (shot_np >= 0) np_shot(a);
@@ -1620,7 +1639,7 @@ index 6ae0cad..7922aca 100644
  	if (shot_art)
  		art_preview(a, shot_art_now, "4 of 10 systems",
  		            "37 found, 2 missing, 61 already", true);
-@@ -11528,6 +12237,11 @@ int main(int argc, char *argv[])
+@@ -11528,6 +12241,11 @@ int main(int argc, char *argv[])
  		else if (!strcmp(argv[i], "--gamemove") && i + 1 < argc)
  			shot_gamemove = (float)atof(argv[++i]);
  		else if (!strcmp(argv[i], "--info")) shot_info = 1;
@@ -1632,7 +1651,7 @@ index 6ae0cad..7922aca 100644
  		else if (!strcmp(argv[i], "--controls")) {
  			shot_controls = 0;
  			if (i + 1 < argc && argv[i + 1][0] >= '0' && argv[i + 1][0] <= '9')
-@@ -11921,6 +12635,7 @@ int main(int argc, char *argv[])
+@@ -11921,6 +12639,7 @@ int main(int argc, char *argv[])
  			 * cover it would ask for is drawn as missing instead - see
  			 * muse_covers_settle. */
  			musec_init(shot_path ? "" : bin, music);
@@ -1640,7 +1659,7 @@ index 6ae0cad..7922aca 100644
  			musec_on_before_heard(aout_before_muse);
  		}
  		/* The play mode the player left it in. */
-@@ -11954,10 +12669,11 @@ int main(int argc, char *argv[])
+@@ -11954,10 +12673,11 @@ int main(int argc, char *argv[])
  	 * The card settings are only read by drawing, which comes long after. */
  	{
  		char set[CFG_STR];
@@ -1653,7 +1672,7 @@ index 6ae0cad..7922aca 100644
  	}
  	a.sys_cursor = 0;
  	db_get_str(db_lib(), "startup_system", startup, sizeof startup, "");
-@@ -12028,6 +12744,8 @@ int main(int argc, char *argv[])
+@@ -12028,6 +12748,8 @@ int main(int argc, char *argv[])
  	 * saved brightness does. Read before ui_init, which is when the scale is
  	 * applied. */
  	if (!ui_init(a.r, P_FONT)) fprintf(stderr, "font init failed\n");
@@ -1662,7 +1681,7 @@ index 6ae0cad..7922aca 100644
  	t_mark("font+settings");
  
  	/* The system cards asked for before the display came up, installed so the
-@@ -12044,6 +12762,20 @@ int main(int argc, char *argv[])
+@@ -12044,6 +12766,20 @@ int main(int argc, char *argv[])
  
  	if (shot_path) {
  		if (shot_screen >= 0) a.screen = (screen_id)shot_screen;
@@ -1683,7 +1702,7 @@ index 6ae0cad..7922aca 100644
  		if (shot_jump) {
  			sysview *v = &a.view[a.sys_cursor];
  			int k, dir = shot_jump > 0 ? 1 : -1;
-@@ -12230,7 +12962,7 @@ int main(int argc, char *argv[])
+@@ -12230,7 +12966,7 @@ int main(int argc, char *argv[])
  		 * MENU opens in a game. It draws over the shelf and returns here.
  		 * Both handles its own, because there MENU and B mean two different
  		 * menus and the screen cannot say which. */
@@ -1692,7 +1711,7 @@ index 6ae0cad..7922aca 100644
  			update_both(&a);
  		} else {
  			if (a.in.pressed[IN_MENU]) { tortos_menu(&a); continue; }
-@@ -12277,6 +13009,8 @@ done:
+@@ -12277,6 +13013,8 @@ done:
  		free(a.view[i].tex); free(a.view[i].tw); free(a.view[i].th);
  		lib_free(&a.view[i].list);
  	}
@@ -1701,6 +1720,35 @@ index 6ae0cad..7922aca 100644
  	ui_quit();
  	IMG_Quit();
  	plat_input_quit();
+diff --git a/src/muselib.c b/src/muselib.c
+index 8f7bb21..635227e 100644
+--- a/src/muselib.c
++++ b/src/muselib.c
+@@ -287,12 +287,22 @@ static void list_dir(const char *dir, names *dirs, names *files)
+ 	while ((e = readdir(d))) {
+ 		char full[LIB_PATH * 2];
+ 		struct stat st;
++		bool is_dir;
+ 
+ 		if (e->d_name[0] == '.') continue;
+ 		if (snprintf(full, sizeof full, "%s/%s", dir, e->d_name) >= (int)sizeof full)
+ 			continue;
+-		if (stat(full, &st) != 0) continue;
+-		if (S_ISDIR(st.st_mode)) { if (dirs) names_add(dirs, e->d_name); }
++		/* The entry says what it is, so no stat: on the card's exFAT a stat
++		 * is the folder searched again for the name, and a library of
++		 * 19,000 songs was 19,000 of them before the first frame (reported
++		 * 2026-10-14). Asked only when the filesystem will not say. */
++		if (e->d_type == DT_DIR || e->d_type == DT_REG) {
++			is_dir = e->d_type == DT_DIR;
++		} else {
++			if (stat(full, &st) != 0) continue;
++			is_dir = S_ISDIR(st.st_mode);
++		}
++		if (is_dir) { if (dirs) names_add(dirs, e->d_name); }
+ 		else if (files && ml_is_audio(e->d_name)) names_add(files, e->d_name);
+ 	}
+ 	closedir(d);
 diff --git a/src/sys_menu.c b/src/sys_menu.c
 index 666711e..305db00 100644
 --- a/src/sys_menu.c
