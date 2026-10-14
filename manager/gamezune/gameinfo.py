@@ -44,6 +44,10 @@ PLATFORMS = {"Game Boy": "Q186437", "Game Boy Color": "Q203992", "Game Boy Advan
 ABBREV = {"Game Boy": ("GB",), "Game Boy Color": ("GBC",), "Game Boy Advance": ("GBA",)}
 SIBLING = {"Game Boy": "Game Boy Color", "Game Boy Color": "Game Boy"}
 CLOSE = 0.75
+# A series or a franchise is not a game: "Pokemon Red.gb" found "Pokemon
+# (video game series)" on the live run.
+NOT_A_GAME = {"Q7058673", "Q196600", "Q1824797"}     # video game series, media franchise
+FIRST_YEAR = {"Game Boy": 1989, "Game Boy Color": 1998, "Game Boy Advance": 2001}
 NOISE = {"version", "edition", "game", "video"}
 
 # The review table's critics, by its parameter names, in the order to prefer.
@@ -52,11 +56,14 @@ CRITICS = [("MC", "metacritic"), ("GR", "gamerankings"), ("Fam", "famitsu"), ("I
            ("AllGame", "allgame"), ("NLife", "nintendo life"), ("GamePro", "gamepro"),
            ("1UP", "1up"), ("Edge", "edge"), ("EuroG", "eurogamer"), ("GameZone", "gamezone")]
 
-FACT_WORDS = {"originally": 3, "named after": 4, "inspired": 3, "first ": 2, "the first": 2,
-              "only ": 1, "best-selling": 4, "million": 3, "record": 2, "secret": 3,
-              "hidden": 2, "cancel": 2, "prototype": 3, "guinness": 4, "never": 1,
-              "unused": 3, "easter egg": 4, "rare": 1, "sold": 2, "ported": 1,
-              "intended": 2, "working title": 4, "based on": 2, "remake": 1, "sequel": 1}
+# Trivia words weigh more than sales words: a sales figure is the fallback,
+# not the first choice (CI's live run picked one for nearly every game).
+FACT_WORDS = {"originally": 5, "named after": 6, "inspired": 5, "working title": 6,
+              "easter egg": 6, "secret": 4, "hidden": 3, "cancel": 3, "prototype": 4,
+              "unused": 4, "intended": 3, "based on": 3, "guinness": 5, "the first": 3,
+              "first ": 1, "only ": 1, "never": 1, "rare": 1, "record": 2, "ported": 1,
+              "best-selling": 3, "million": 2, "sold": 1, "remake": 1, "sequel": 1,
+              "composer": 2, "voice": 1, "cameo": 4, "reference": 3}
 FACT_AVOID = ("praised", "criticized", "criticised", "review", "score", "rated", "metacritic",
               "gamerankings", "aggregat", "citation needed")
 FACT_SECTIONS = ("development", "production", "design", "release", "legacy", "sales",
@@ -188,6 +195,8 @@ def find(wiki, system, rom):
             best, key = None, None
             for rank, (t, qid) in enumerate(hits):
                 ent = ents.get(qid) or {}
+                if set(_qids(ent, "P31")) & NOT_A_GAME or re.search(r"\b(series|franchise)\b", t, re.I):
+                    continue
                 on = max([plats.get(p, 0) for p in _qids(ent, "P400")] or [0])
                 if not on:
                     continue
@@ -206,14 +215,25 @@ def find(wiki, system, rom):
 
 # ---- the facts ------------------------------------------------------------------------
 
-def _year(ent):
+def _year(ent, system, intro=""):
+    """The first release on or after the system's own launch - a later date
+    is a re-release (Harvest Moon GB came back as "2012") - else the year
+    the article's opening names ("Shantae is a 2002 platform game")."""
     years = []
     for c in _claims(ent, "P577"):
         t = (c["mainsnak"].get("datavalue", {}).get("value") or {}).get("time", "")
         m = re.match(r"[+-]?(\d{4})", t)
         if m:
-            years.append(m.group(1))
-    return min(years) if years else ""
+            years.append(int(m.group(1)))
+    first = FIRST_YEAR.get(system, 1980)
+    era = [y for y in years if first <= y <= first + 12]
+    m = re.search(r"\b((?:19|20)\d\d)\b[^.]{0,60}\b(?:video )?game\b", intro)
+    told = int(m.group(1)) if m and first <= int(m.group(1)) <= first + 12 else None
+    if era:
+        return str(min(era))
+    if told:
+        return str(told)
+    return str(min(years)) if years else ""
 
 
 def _genre_word(label):
@@ -273,6 +293,7 @@ def review_table(wikitext, system):
         k, v = p.split("=", 1)
         k = k.strip()
         v = _clean_value(v).strip()
+        v = re.sub(r"(\d+(?:\.\d+)?)\s*out of\s*(\d+)", r"\1/\2", v, flags=re.I)
         if not v:
             continue
         # "GBA: 85/100<br />PS2: 80/100" - this system's, or none; a bare
@@ -302,7 +323,7 @@ def score_label(table):
         elif key == "GR" and not v.endswith("%"):
             v = v.split("/")[0] + "%"
         elif key == "GR":
-            v = "%d%%" % round(float(v[:-1]))
+            v = "%d%%" % int(float(v[:-1]) + 0.5)     # 88.5 is 89, not round()'s 88
         return "%s %s" % (name, v)
     return ""
 
@@ -386,7 +407,6 @@ def lookup(wiki, system, rom):
         return row
     row["source"] = title
     row["title"] = ((ent.get("labels") or {}).get("en") or {}).get("value", "") or title
-    row["year"] = _year(ent)
     genres, devs, pubs = _qids(ent, "P136"), _qids(ent, "P178"), _qids(ent, "P123")
     names = wiki.labels(genres + devs + pubs) if genres or devs or pubs else {}
     row["genre"] = ", ".join(dict.fromkeys(g for g in (_genre_word(names.get(q, "")) for q in genres) if g))
@@ -395,6 +415,7 @@ def lookup(wiki, system, rom):
     row["score"] = score_label(review_table(wiki.wikitext(title), system)) or \
         _wikidata_score(wiki, ent, system)
     text = wiki.text(title)
+    row["year"] = _year(ent, system, next((b for h, b in _sections(text) if h == ""), ""))
     row["synopsis"] = synopsis(text)
     row["fact"] = fun_fact(text)
     return row

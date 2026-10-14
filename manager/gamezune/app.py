@@ -14,7 +14,7 @@ import tkinter as tk
 import traceback
 from tkinter import filedialog, messagebox, simpledialog, ttk
 
-from . import device, games, music, playlists
+from . import device, gameinfo, games, music, playlists
 from .card import Card, find_cards, human_size, is_card
 
 BG, PANEL, FG, DIM, FAINT, ACCENT = "#0d0d0f", "#1a1a1e", "#f2f2f2", "#9a9aa2", "#5a5a62", "#ec008c"
@@ -753,13 +753,23 @@ class GamesPage(Page):
         ttk.Button(bar, text="get missing box art", command=lambda: self.art(missing=True)).pack(side="left")
         ttk.Button(bar, text="get box art for these", command=lambda: self.art(missing=False)).pack(
             side="left", padx=6)
+        ttk.Button(bar, text="get game info", command=lambda: self.info(missing=True)).pack(side="left")
+        ttk.Button(bar, text="get info for these", command=lambda: self.info(missing=False)).pack(
+            side="left", padx=6)
         body = tk.Frame(self, bg=BG)
         body.pack(fill="both", expand=True)
-        f, self.list = tree(body, [("game", "game"), ("art", "box art")], [520, 80], "game")
+        f, self.list = tree(body, [("game", "game"), ("art", "box art"), ("info", "game info")],
+                            [460, 70, 230], "game")
         f.pack(side="left", fill="both", expand=True)
         self.list.bind("<<TreeviewSelect>>", lambda e: self.preview())
-        self.pic = tk.Label(body, bg=BG, fg=FAINT, text="", width=36, font=(FONT, 10))
-        self.pic.pack(side="left", fill="y", padx=(18, 0))
+        side = tk.Frame(body, bg=BG)
+        side.pack(side="left", fill="y", padx=(18, 0))
+        self.pic = tk.Label(side, bg=BG, fg=FAINT, text="", width=36, font=(FONT, 10))
+        self.pic.pack(side="top")
+        # What the Pixel 2's game page will show of it.
+        self.about = tk.Label(side, bg=BG, fg=FG, text="", justify="left", anchor="nw",
+                              wraplength=300, font=(FONT, 10))
+        self.about.pack(side="top", fill="x", pady=(10, 0))
 
     def card_changed(self):
         for w in self.sys_row.winfo_children():
@@ -784,9 +794,13 @@ class GamesPage(Page):
         self.list.delete(*self.list.get_children())
         if not self.sys:
             return
+        rows = gameinfo.load(self.app.card)
         for rom in games.games(self.app.card, self.sys):
+            r = rows.get((self.sys.folder, rom))
+            info = "-" if not r else ((r["score"] or r["genre"] or "yes") if r["source"] else "not found")
             self.list.insert("", "end", iid=rom, values=(
-                os.path.splitext(rom)[0], "yes" if games.has_art(self.app.card, self.sys, rom) else "-"))
+                os.path.splitext(rom)[0], "yes" if games.has_art(self.app.card, self.sys, rom) else "-",
+                info))
         self.preview()
 
     def preview(self):
@@ -803,6 +817,16 @@ class GamesPage(Page):
                     self.art_img = None
         self.pic.configure(image=self.art_img or "", text="" if self.art_img else
                            ("no box art yet" if sel else ""))
+        r = gameinfo.load(self.app.card).get((self.sys.folder, sel[0])) if sel and self.sys else None
+        if r and r["source"]:
+            facts = [r["score"], " \u00b7 ".join(x for x in (r["genre"], r["year"]) if x),
+                     r["developer"], "", r["synopsis"][:420] + ("..." if len(r["synopsis"]) > 420 else "")]
+            if r["fact"]:
+                facts += ["", "fun fact: " + r["fact"]]
+            self.about.configure(text="\n".join(f for f in facts if f is not None))
+        else:
+            self.about.configure(text="not found on Wikipedia" if r else
+                                 ("no game info yet" if sel else ""))
 
     def add(self):
         if not self.app.need_card():
@@ -833,6 +857,39 @@ class GamesPage(Page):
                                (len(roms), "" if len(roms) == 1 else "s")):
             games.delete_games(self.app.card, self.sys, roms)
             self.fill()
+
+    def info(self, missing):
+        """Year, genre, studio, score, synopsis and a fun fact for the
+        Pixel 2's game pages (gamezune/gameinfo.py)."""
+        if not self.sys or not self.app.need_card():
+            return
+        card, s = self.app.card, self.sys
+        roms = games.games(card, s) if missing else list(self.list.selection())
+        if missing:
+            have = gameinfo.load(card)
+            roms = [r for r in roms if (s.folder, r) not in have]
+        if not roms:
+            messagebox.showinfo("Game Zune", "Every game here has been looked up. Choose games and "
+                                "\"get info for these\" to look again." if missing
+                                else "Choose games in the list first.")
+            return
+
+        def work(report):
+            return gameinfo.fetch(card, s, roms, progress=lambda i, n, t: report(i, n, "info for " + t))
+
+        def done(r):
+            found, missing_ = r
+            text = "Game info for %d game%s." % (len(found), "" if len(found) == 1 else "s")
+            if missing_:
+                text += ("\n\nNot found on Wikipedia (%d): %s%s\nNaming a game the No-Intro way, e.g. "
+                         "\"Pokemon - Red Version (USA, Europe)\", helps." % (
+                             len(missing_), ", ".join(os.path.splitext(m)[0] for m in missing_[:6]),
+                             ", ..." if len(missing_) > 6 else ""))
+            text += ("\n\nScores are Metacritic's where it scored the game (most Game Boy Advance games), "
+                     "else GameRankings' or a named critic's.")
+            messagebox.showinfo("Game Zune", text)
+            self.fill()
+        self.app.run(work, done, "getting game info from Wikipedia (needs the internet)")
 
     def art(self, missing):
         if not self.sys or not self.app.need_card():

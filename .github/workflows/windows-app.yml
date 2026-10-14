@@ -70,7 +70,7 @@ jobs:
           pyz = a.open_embedded_archive([n for n in a.toc if n.endswith(".pyz")][0])
           need = ["TortOS/tortos.elf", "TortOS/zune-wallpaper.jpg", "gamezune.ico"]
           have = {n.replace("\\", "/") for n in a.toc}       # Windows stores TortOS\tortos.elf
-          missing = [n for n in need if n not in have] + [m for m in ("zunesync", "mutagen", "gamezune.app", "gamezune.albumart") if m not in pyz.toc]
+          missing = [n for n in need if n not in have] + [m for m in ("zunesync", "mutagen", "gamezune.app", "gamezune.albumart", "gamezune.gameinfo") if m not in pyz.toc]
           assert not missing, missing
           print("ok:", len(a.toc), "files")
       - uses: actions/upload-artifact@v4

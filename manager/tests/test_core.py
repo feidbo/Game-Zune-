@@ -11,7 +11,7 @@ import unittest
 import zipfile
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
-from gamezune import albumart, card as C, device, games, match, music, playlists  # noqa: E402
+from gamezune import albumart, card as C, device, gameinfo, games, match, music, playlists  # noqa: E402
 
 HAVE_FFMPEG = shutil.which("ffmpeg") is not None
 
@@ -372,6 +372,91 @@ class BroaderBoxArt(CardTest):
         self.assertTrue(games.has_art(self.card, gbc, "Pokemon Yellow.gbc"))
         self.assertIsNone(games.fetch_art(self.card, gb, "Tetris Plus.gb", fetch=fake))
         games._index_cache.clear()
+
+
+class FakeWiki:
+    """Wikipedia and Wikidata as they answer, for one Game Boy Advance game
+    and a series article that must not be taken for it."""
+    def claim(v):
+        return {"mainsnak": {"snaktype": "value", "datavalue": {"value": v}}}
+    ITEMS = {
+        "Q9": {"labels": {"en": {"value": "Metroid"}},
+               "claims": {"P31": [claim({"id": "Q7058673"})], "P400": [claim({"id": "Q188642"})]}},
+        "Q1": {"labels": {"en": {"value": "Metroid Fusion"}},
+               "claims": {"P31": [claim({"id": "Q7889"})], "P400": [claim({"id": "Q188642"})],
+                          "P577": [claim({"time": "+2002-11-17T00:00:00Z"}),
+                                   claim({"time": "+2014-04-03T00:00:00Z"})],
+                          "P136": [claim({"id": "Q2"})], "P178": [claim({"id": "Q3"})],
+                          "P123": [claim({"id": "Q4"})]}},
+        "Q5": {"labels": {"en": {"value": "Tetris"}},
+               "claims": {"P31": [claim({"id": "Q7889"})], "P400": [claim({"id": "Q186437"})]}},
+        "Q2": {"labels": {"en": {"value": "Metroidvania video game"}}},
+        "Q3": {"labels": {"en": {"value": "Nintendo R&D1"}}},
+        "Q4": {"labels": {"en": {"value": "Nintendo"}}},
+    }
+    TEXT = ("Metroid Fusion is a 2002 action-adventure game for the Game Boy Advance.\n"
+            "Samus explores a space station.\n== Development ==\n"
+            "The game was originally titled Metroid IV during development, its working title.\n"
+            "== Reception ==\nCritics praised it.")
+    WIKITEXT = "{{Infobox}}\n{{Video game reviews\n| MC = 92/100<ref>x</ref>\n| GR = 91%\n}}"
+
+    def __call__(self, url):
+        q = {k: v[0] for k, v in urllib.parse.parse_qs(urllib.parse.urlparse(url).query).items()}
+        if q.get("generator") == "search":
+            pages = [{"title": "Metroid (video game series)", "index": 1, "pageprops": {"wikibase_item": "Q9"}},
+                     {"title": "Metroid Fusion", "index": 2, "pageprops": {"wikibase_item": "Q1"}},
+                     {"title": "Tetris (Game Boy video game)", "index": 3, "pageprops": {"wikibase_item": "Q5"}}]
+            return json.dumps({"query": {"pages": pages}}).encode()
+        if q.get("action") == "wbgetentities":
+            return json.dumps({"entities": {i: self.ITEMS[i] for i in q["ids"].split("|")
+                                            if i in self.ITEMS}}).encode()
+        if q.get("prop") == "extracts":
+            return json.dumps({"query": {"pages": [{"extract": self.TEXT}]}}).encode()
+        if q.get("prop") == "revisions":
+            return json.dumps({"query": {"pages": [{"revisions": [
+                {"slots": {"main": {"content": self.WIKITEXT}}}]}]}}).encode()
+        return None
+
+
+class GameInfo(CardTest):
+    def test_names_as_a_search_says_them(self):
+        self.assertEqual(gameinfo.rom_title("Legend of Zelda, The - Link's Awakening DX (USA, Europe) (Rev 2).gbc"),
+                         "The Legend of Zelda Link's Awakening DX")
+        self.assertEqual(gameinfo.rom_title("pokemon_red.gb"), "pokemon red")
+
+    def test_the_review_table_for_this_system(self):
+        t = gameinfo.review_table("{{Video game reviews|MC = GBA: 85/100<br />PS2: 80/100|GR=88.5%"
+                                  "|IGN = 9 out of 10}}", "Game Boy Advance")
+        self.assertEqual(gameinfo.score_label(t), "metacritic 85")
+        t = gameinfo.review_table("{{Video game reviews|MC = PS2: 80/100|GR=88.5%}}", "Game Boy Advance")
+        self.assertEqual(gameinfo.score_label(t), "gamerankings 89%", "another system's Metacritic is not this one's")
+        self.assertEqual(gameinfo.score_label({}), "")
+
+    def test_found_read_and_kept_on_the_card(self):
+        web = FakeWiki()
+        gba = games.System("Game Boy Advance", "Game Boy Advance", ("gba",))
+        self.put("Roms/Game Boy Advance/Metroid Fusion (USA).gba")
+        found, missing = gameinfo.fetch(self.card, gba, ["Metroid Fusion (USA).gba", "Golden Sun (USA).gba"],
+                                        wiki=gameinfo.Wiki(web, pace=False))
+        self.assertEqual(found, ["Metroid Fusion (USA).gba"])
+        self.assertEqual(missing, ["Golden Sun (USA).gba"], "never the series, never a Game Boy game")
+        row = gameinfo.load(self.card)[("Game Boy Advance", "Metroid Fusion (USA).gba")]
+        self.assertEqual((row["year"], row["genre"], row["developer"], row["publisher"], row["score"]),
+                         ("2002", "metroidvania", "Nintendo R&D1", "Nintendo", "metacritic 92"))
+        self.assertIn("Samus explores", row["synopsis"])
+        self.assertIn("working title", row["fact"])
+        self.assertEqual(row["source"], "Metroid Fusion")
+        text = read(self.card.path("Roms", ".zune", "games.tsv"))
+        self.assertEqual(len([ln for ln in text.splitlines() if not ln.startswith("#")]), 2,
+                         "one line a game, the one not found kept so it is not asked again")
+        self.assertTrue(gameinfo.has_info(gameinfo.load(self.card), "Game Boy Advance", "Metroid Fusion (USA).gba"))
+        self.assertFalse(gameinfo.has_info(gameinfo.load(self.card), "Game Boy Advance", "Golden Sun (USA).gba"))
+
+    def test_newlines_and_tabs_survive_the_file(self):
+        rows = {("GB", "a.gb"): dict(dict.fromkeys(gameinfo.COLUMNS, ""), folder="GB", file="a.gb",
+                                     synopsis="one\ntwo\tthree \\ four", source="A")}
+        gameinfo.save(self.card, rows)
+        self.assertEqual(gameinfo.load(self.card)[("GB", "a.gb")]["synopsis"], "one\ntwo three \\ four")
 
 
 class Theme(CardTest):

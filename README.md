@@ -36,8 +36,13 @@ picture: **zune**, **game boy** and **settings**.
   (with **now playing** on top while something plays, and **audiobooks** if you have any).
   Each opens the twist at that category. Back out and the menu is still on the word you
   picked, and next time you open zune it starts there.
-- **game boy** is the games: **game boy**, **game boy color** and **game boy advance**, each
-  opening the twist of its games.
+- **game boy** is the games: **recent** (your last 20 games played, newest first, with when you
+  played each), then **game boy**, **game boy color** and **game boy advance**, each opening the
+  twist of its games. Under each game is what it is - **"metacritic 92 · platformer"** - once the
+  Windows app has looked it up (**games → get game info**).
+- **A on a game opens its page:** box art, critics' score, genre, year, studio, **when you last
+  saved**, a synopsis and a **fun fact** (up/down scroll). **A** or **START** plays it from there,
+  **Y** favorites it, **B** goes back. **START on the list** plays a game without the page.
 - **settings** is last, as it was on the Zune's main menu. It is TortOS's own menu for the
   whole device: brightness, sleep, the UI theme, saves and emulator options. **MENU** also
   opens it from any screen.
@@ -115,11 +120,11 @@ play/pause button and **B** its back button.
 | Up / Down | Move | Move | Move (hold: fast, with the letter) | Volume |
 | Left / Right | — | **Twist**: next system | **Twist**: artists, albums… / next album | Skip (hold: scan) |
 | L1 / R1 | — | Jump by letter | Jump by letter | Previous / next song |
-| A | Open | Play | Open or play | **Options**: rate, song list, shuffle, repeat |
+| A | Open | **Game page** (A again plays) | Open or play | **Options**: rate, song list, shuffle, repeat |
 | B | Back | Back | Back | Back |
 | X | — | Game details | **Options** | Options |
 | Y | — | Favorite | — | **Like** (adds to liked songs) / unlike |
-| START | — | — | Play / pause | Play / pause (**hold: pocket lock**) |
+| START | — | **Play now** | Play / pause | Play / pause (**hold: pocket lock**) |
 | SELECT | Music | Music | Close music | Close music |
 | MENU | TortOS menu (UI Theme and **Screen Off** are in here) | TortOS menu (**Sound: game / zune music**) | Music menu (rescan, lock…) | Music menu; **wakes the pocket lock** |
 
@@ -321,7 +326,7 @@ SD card in your computer and start it; it finds the card by itself.
 |---|---|
 | **music** | Browse by artist and album, search, **add songs** or **add a folder** (each song is filed as `Music/<artist>/<album>/<NN - title>` from its tags, with the album's cover saved beside it), **delete**, **add to playlist**, and **get missing album art**. |
 | **playlists** | **new**, **rename**, **copy**, **delete**; **add songs** (searchable), **remove**, **move up / down**, **save**. **liked songs** is editable here too - it *is* your likes. The auto playlists are read-only (update rebuilds them), so **copy** one to change it. |
-| **games** | Game Boy, Game Boy Color and Game Boy Advance: **add games** (each goes to its system's folder, zips included), **delete**, and **get missing box art** from the [libretro-thumbnails](https://github.com/libretro-thumbnails) project - the Pixel 2 has no Wi-Fi to fetch it itself. |
+| **games** | Game Boy, Game Boy Color and Game Boy Advance: **add games** (each goes to its system's folder, zips included), **delete**, **get missing box art** from the [libretro-thumbnails](https://github.com/libretro-thumbnails) project, and **get game info** (below) - the Pixel 2 has no Wi-Fi to fetch either itself. |
 | **device** | **install / update the zune theme**, **restore the stock launcher** (with the same safety checks as the install script), **update library and auto playlists** (`zunesync`, with your Last.fm key if you have one), and **eject the card**. |
 
 **How the app finds art.** Each lookup goes from strict to broad and stops at the first hit; the
@@ -337,6 +342,22 @@ report says which matches were broad so you can check those.
 It never takes a different number: *Super Mario Land 2* never gets *Super Mario Land*'s art, nor
 *Vol. 2* *Vol. 1*'s, nor *Tetris Plus* *Tetris*'s. Covers are saved as `cover.jpg` (500 px) in
 the album's folder, box art as `Roms/<system>/.media/<ROM name>.png`.
+
+**How the app finds game info** (for the games list and each game's page). It searches Wikipedia
+for the game and checks the matching Wikidata entry is for that Game Boy (or the other one, for a
+cartridge that plays on both) and named like your file - never a series article. From there:
+
+| | Where it comes from |
+|---|---|
+| Score | The article's review table: **Metacritic** where it scored the game - most Game Boy Advance games. Metacritic's game scores mostly start around 2001, so Game Boy and Game Boy Color games almost never have one; those show **GameRankings** or a named critic instead (e.g. "famitsu 30/40"), labelled with whose score it is, or nothing. |
+| Genre, studio, year | Wikidata (the first release on that system, not a later re-release). |
+| Synopsis | The article's opening paragraphs. |
+| Fun fact | One sentence picked from the article's development, release or legacy sections, favouring trivia ("originally", "named after", "working title") over sales figures; left off when nothing reads like one. |
+
+Tested on 20 real games across the three systems: all 20 found, genre/studio/synopsis for all 20,
+a score for 17 (Metacritic for every GBA one tried), a fun fact for 17. It is saved on the card as
+`Roms/.zune/games.tsv` (text from Wikipedia, CC BY-SA). Games it can't find show their box art,
+last save and a note on their page.
 
 **Getting it:** each change to the app is built into `GameZune.exe` by this repo's GitHub
 Actions (**Actions → app → the latest run → Artifacts → GameZune-windows**). Pushing a tag
@@ -415,6 +436,8 @@ Two patches, in `tortos-zune/patches/`, each building and passing TortOS's check
      letter, the options menu, hearts, the no-art pattern, Now Playing, and the clock with the
      battery beside it. Fonts and the
      background are opened only when the theme first draws.
+   - `src/zune_games.h` (new, included into `main.c`): the games' info from `games.tsv`, the
+     **recent** list, and the game page.
    - `src/zune_music.h` (new, included into `main.c`): the music - the zune menu, the twist
      browser, Now Playing's options and song list, liked songs, and reading `library.tsv` and
      `ratings.tsv`.
