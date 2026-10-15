@@ -67,6 +67,7 @@ class App(tk.Tk):
         self.settings = load_settings()
         self.card = None
         self.tracks = []
+        self.asked_dislikes = set()
         self.by_rel = {}
         self.events = queue.Queue()
         self.busy = False
@@ -209,6 +210,10 @@ class App(tk.Tk):
             self.pages["playlists"].library_changed()
             if then:
                 then()
+            elif card.root not in self.asked_dislikes:
+                # Once a card a session: what was disliked on the Pixel 2.
+                self.asked_dislikes.add(card.root)
+                self.pages["music"].remove_disliked(ask_only_if_any=True)
         self.run(work, done, "reading the music")
 
     def card_status(self):
@@ -340,6 +345,7 @@ class MusicPage(Page):
         ttk.Button(bar, text="delete", command=self.delete).pack(side="left")
         ttk.Button(bar, text="add to playlist...", command=self.to_playlist).pack(side="left", padx=6)
         ttk.Button(bar, text="get missing album art", command=self.covers).pack(side="left")
+        ttk.Button(bar, text="remove disliked", command=self.remove_disliked).pack(side="left", padx=6)
         self.search = tk.StringVar()
         self.search.trace_add("write", lambda *a: self.fill_songs())
         e = ttk.Entry(bar, textvariable=self.search, width=30)
@@ -436,6 +442,43 @@ class MusicPage(Page):
                 if bare else ""))
             self.app.reload_music()
         self.app.run(work, done, "adding songs")
+
+    def remove_disliked(self, ask_only_if_any=False):
+        """What was disliked on the Pixel 2 - songs, albums, artists - taken
+        off the card, after saying what it comes to."""
+        if not self.app.need_card():
+            return
+        card = self.app.card
+        found = music.disliked(card)
+        if not found["rels"]:
+            if not ask_only_if_any:
+                messagebox.showinfo("Game Zune", "Nothing is disliked on the Pixel 2.\n\nDislike a song, "
+                                    "an album or an artist there (X on it, then dislike) and it is "
+                                    "taken off the card here.")
+            return
+        what = []
+        for k, one in (("artists", "artist"), ("albums", "album"), ("songs", "song")):
+            if found[k]:
+                what.append("%d %s%s" % (len(found[k]), one, "" if len(found[k]) == 1 else "s"))
+        names = ", ".join(found["artists"][:4] + [a.split("/")[-1] for a in found["albums"][:4]])
+        if not messagebox.askyesno(
+                "Game Zune", "On the Pixel 2 you disliked %s - %d song%s on the card%s.\n\n"
+                "Take them off the card now? (They are taken off your playlists too.)" % (
+                    ", ".join(what), len(found["rels"]), "" if len(found["rels"]) == 1 else "s",
+                    " (%s%s)" % (names, ", ..." if len(found["artists"]) + len(found["albums"]) > 8 else "")
+                    if names else "")):
+            return
+
+        def work(report):
+            gone = music.remove_disliked(card, found)
+            playlists.forget(card, gone)
+            return gone
+
+        def done(gone):
+            messagebox.showinfo("Game Zune", "Took %d song%s off the card." % (
+                len(gone), "" if len(gone) == 1 else "s"))
+            self.app.reload_music(then=lambda: None)
+        self.app.run(work, done, "removing what was disliked")
 
     def covers(self):
         if not self.app.need_card():
@@ -797,7 +840,13 @@ class GamesPage(Page):
         rows = gameinfo.load(self.app.card)
         for rom in games.games(self.app.card, self.sys):
             r = rows.get((self.sys.folder, rom))
-            info = "-" if not r else ((r["score"] or r["genre"] or "yes") if r["source"] else "not found")
+            if not r:
+                info = "-"
+            elif not r["source"]:
+                info = "not found"
+            else:
+                g = gameinfo.grade(r["score"])
+                info = " \u00b7 ".join(x for x in (g, r["genre"].split(",")[0]) if x) or "yes"
             self.list.insert("", "end", iid=rom, values=(
                 os.path.splitext(rom)[0], "yes" if games.has_art(self.app.card, self.sys, rom) else "-",
                 info))
@@ -819,7 +868,9 @@ class GamesPage(Page):
                            ("no box art yet" if sel else ""))
         r = gameinfo.load(self.app.card).get((self.sys.folder, sel[0])) if sel and self.sys else None
         if r and r["source"]:
-            facts = [r["score"], " \u00b7 ".join(x for x in (r["genre"], r["year"]) if x),
+            g = gameinfo.grade(r["score"])
+            facts = ["%s  (%s)" % (g, r["score"]) if g else "",
+                     " \u00b7 ".join(x for x in (r["genre"], r["year"]) if x),
                      r["developer"], "", r["synopsis"][:420] + ("..." if len(r["synopsis"]) > 420 else "")]
             if r["fact"]:
                 facts += ["", "fun fact: " + r["fact"]]

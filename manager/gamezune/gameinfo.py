@@ -44,6 +44,7 @@ PLATFORMS = {"Game Boy": "Q186437", "Game Boy Color": "Q203992", "Game Boy Advan
 ABBREV = {"Game Boy": ("GB",), "Game Boy Color": ("GBC",), "Game Boy Advance": ("GBA",)}
 SIBLING = {"Game Boy": "Game Boy Color", "Game Boy Color": "Game Boy"}
 CLOSE = 0.75
+LOOSE = 0.62             # the second, looser search
 # A series or a franchise is not a game: "Pokemon Red.gb" found "Pokemon
 # (video game series)" on the live run.
 NOT_A_GAME = {"Q7058673", "Q196600", "Q1824797"}     # video game series, media franchise
@@ -109,7 +110,22 @@ class Wiki:
         return [(p["title"], (p.get("pageprops") or {}).get("wikibase_item"))
                 for p in pages if p.get("title")]
 
-    def entities(self, ids, props="labels|claims|sitelinks"):
+    def wbsearch(self, q):
+        """[(page title, wikidata id)] from Wikidata's own name search, which
+        reads aliases too - the other regions' names of a game."""
+        d = self.api(WD, action="wbsearchentities", search=q, language="en", type="item", limit=10)
+        ids = [h.get("id") for h in (d or {}).get("search", []) if h.get("id")]
+        if not ids:
+            return []
+        ents = self.entities(ids)
+        out = []
+        for i in ids:
+            t = (((ents.get(i) or {}).get("sitelinks") or {}).get("enwiki") or {}).get("title")
+            if t:
+                out.append((t, i))
+        return out
+
+    def entities(self, ids, props="labels|aliases|claims|sitelinks"):
         out = {}
         ids = [i for i in ids if i]
         for k in range(0, len(ids), 50):
@@ -180,8 +196,56 @@ def _qids(ent, prop):
     return out
 
 
+def _subtitle(rom):
+    """The part after the first " - " of a No-Intro name, or "": "Castlevania
+    - Aria of Sorrow" is "Aria of Sorrow", a name a search can find alone."""
+    stem = os.path.splitext(os.path.basename(rom))[0].replace("_", " ")
+    stem = re.split(r"\s*[(\[]", stem, 1)[0]
+    parts = [p.strip() for p in stem.split(" - ")]
+    return " ".join(parts[1:]) if len(parts) > 1 else ""
+
+
+def _names(ent, page):
+    """Every name an item goes by: its label, its aliases, its article's."""
+    label = ((ent.get("labels") or {}).get("en") or {}).get("value", "")
+    aliases = [a.get("value", "") for a in ((ent.get("aliases") or {}).get("en") or [])]
+    return [label, re.sub(r"\s*\((?:[^)]*video game|[^)]*game)\)$", "", page)] + aliases
+
+
+def _pick(wiki, hits, wants, plats, close, system, by_text):
+    """The best of `hits` - [(page, qid)] - that is a game on this system
+    and named like one of `wants`, or None. `by_text`: an item that names no
+    platform passes when its article's opening says this system."""
+    if not hits:
+        return None
+    ents = wiki.entities([q for _, q in hits])
+    best, key = None, None
+    for rank, (t, qid) in enumerate(hits):
+        ent = ents.get(qid) or {}
+        if set(_qids(ent, "P31")) & NOT_A_GAME or re.search(r"\b(series|franchise)\b", t, re.I):
+            continue
+        sc = max(similar(w, _core(n)) for w in wants if w for n in _names(ent, t) if n)
+        if sc < close:
+            continue
+        on = max([plats.get(p, 0) for p in _qids(ent, "P400")] or [0])
+        if not on and by_text and not _qids(ent, "P400") and sc >= 0.85:
+            intro = next((b for h, b in _sections(wiki.text(t)) if h == ""), "")
+            on = 1 if system.lower() in intro.lower() else 0
+        if not on:
+            continue
+        k = (round(sc, 2), on, -rank)
+        if key is None or k > key:
+            best, key = (t, ent), k
+    return best
+
+
 def find(wiki, system, rom):
-    """The game's (Wikipedia title, Wikidata item) or (None, None)."""
+    """The game's (Wikipedia title, Wikidata item) or (None, None). Strictly
+    first; then, for a game that was not found that way - reported
+    2026-10-15 of games everyone knows - more loosely: its subtitle alone,
+    Wikipedia's title search, Wikidata's search of names and aliases (the
+    other regions' titles), names less alike, and an item that names no
+    platform taken when its article says this system."""
     title = rom_title(rom)
     want = _core(title)
     if not want:
@@ -189,29 +253,24 @@ def find(wiki, system, rom):
     plats = {PLATFORMS[system]: 2}
     if system in SIBLING:
         plats[PLATFORMS[SIBLING[system]]] = 1
-    hits = []
     for q in ("%s %s video game" % (title, system), "%s video game" % title):
-        hits = [(t, q_) for t, q_ in wiki.search(q) if q_]
-        if hits:
-            ents = wiki.entities([q_ for _, q_ in hits])
-            best, key = None, None
-            for rank, (t, qid) in enumerate(hits):
-                ent = ents.get(qid) or {}
-                if set(_qids(ent, "P31")) & NOT_A_GAME or re.search(r"\b(series|franchise)\b", t, re.I):
-                    continue
-                on = max([plats.get(p, 0) for p in _qids(ent, "P400")] or [0])
-                if not on:
-                    continue
-                label = ((ent.get("labels") or {}).get("en") or {}).get("value", "")
-                page = re.sub(r"\s*\((?:[^)]*video game|[^)]*game)\)$", "", t)
-                sc = max(similar(want, _core(label)), similar(want, _core(page)))
-                if sc < CLOSE:
-                    continue
-                k = (round(sc, 2), on, -rank)
-                if key is None or k > key:
-                    best, key = (t, qid, ent), k
-            if best:
-                return best[0], best[2]
+        got = _pick(wiki, [(t, q_) for t, q_ in wiki.search(q) if q_], [want], plats, CLOSE,
+                    system, False)
+        if got:
+            return got
+    sub = _subtitle(rom)
+    wants = [want] + ([_core(sub)] if sub and len(_core(sub).split()) >= 2 else [])
+    queries = ["%s %s" % (sub, system)] if sub else []
+    queries += ["%s %s" % (title, system), 'intitle:"%s"' % title, title]
+    for q in queries:
+        got = _pick(wiki, [(t, q_) for t, q_ in wiki.search(q) if q_], wants, plats, LOOSE,
+                    system, True)
+        if got:
+            return got
+    for q in [title] + ([sub] if sub else []):
+        got = _pick(wiki, wiki.wbsearch(q), wants, plats, LOOSE, system, True)
+        if got:
+            return got
     return None, None
 
 
@@ -331,6 +390,39 @@ def score_label(table):
             v += "/10"     # 88.5 is 89, not round()'s 88
         return "%s %s" % (name, v)
     return ""
+
+
+def percent(score):
+    """A score label as a percentage, or None: "metacritic 92" 92, "gamerankings
+    88%" 88, "famitsu 30/40" 75, "ign 9.5/10" 95."""
+    m = re.search(r"(\d+(?:\.\d+)?)\s*(?:/\s*(\d+(?:\.\d+)?)|(%))?\s*$", score or "")
+    if not m:
+        return None
+    v = float(m.group(1))
+    if m.group(2):
+        scale = float(m.group(2))
+        if not scale:
+            return None
+        out = v * 100.0 / scale
+    else:
+        out = v if v > 10 or m.group(3) else v * 10       # a bare "9.5" is out of 10
+    return max(0, min(100, int(out + 0.5)))
+
+
+def grade(score):
+    """The score as a school grade: A 90 and up, B 80s, C 70s, D 60s, F below;
+    "+" for a last digit of 7-9, "-" for 0-3 (100 is A+; F has neither).
+    "" when there is no score."""
+    p = percent(score)
+    if p is None:
+        return ""
+    if p >= 100:
+        return "A+"
+    if p < 60:
+        return "F"
+    letter = "ABCD"[min(3, 9 - p // 10)]
+    d = p % 10
+    return letter + ("+" if d >= 7 else "-" if d <= 3 else "")
 
 
 def _wikidata_score(wiki, ent, system):

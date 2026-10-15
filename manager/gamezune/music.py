@@ -356,6 +356,75 @@ def get_covers(card, tracks, finder=None, progress=None, cancelled=lambda: False
 
 # ---- taking away --------------------------------------------------------------------
 
+# ---- what the Pixel 2 disliked ----------------------------------------------------------
+
+REMOVE_FILE = ("Music", ".zune", "remove.tsv")
+RATINGS_FILE = ("Music", ".zune", "ratings.tsv")
+REMOVE_HEADER = ("# Game Zune: what was disliked on the Pixel 2, for the Game Zune app to"
+                 " take off the card. album<TAB>folder or artist<TAB>name.")
+
+
+def _lines(path):
+    try:
+        with open(path, encoding="utf-8", errors="replace") as f:
+            return [ln.rstrip("\r\n") for ln in f]
+    except OSError:
+        return []
+
+
+def _audio_under(card, rel):
+    out = []
+    for root, dirs, names in os.walk(card.full(rel)):
+        dirs[:] = [d for d in dirs if not d.startswith(".")]
+        out += [card.rel(os.path.join(root, n)) for n in names
+                if n.lower().endswith(AUDIO) and not n.startswith(".")]
+    return out
+
+
+def disliked(card):
+    """What the Pixel 2 marked to go: songs disliked there (ratings.tsv's -1
+    lines), and albums and artists disliked there (remove.tsv). A dict of
+    songs, albums and artists as marked, and rels - every song on the card
+    they come to, an artist's being every folder that is that act, "feat."
+    folders included (primary_artist)."""
+    songs = [ln.split("\t")[0] for ln in _lines(card.path(*RATINGS_FILE))
+             if ln and not ln.startswith("#") and ln.endswith("\t-1")]
+    albums, artists = [], []
+    for ln in _lines(card.path(*REMOVE_FILE)):
+        kind, _, key = ln.partition("\t")
+        if kind == "album" and key:
+            albums.append(key)
+        elif kind == "artist" and key:
+            artists.append(key)
+    rels = {s for s in songs if os.path.isfile(card.full(s))}
+    for d in albums:
+        rels.update(_audio_under(card, d))
+    try:
+        folders = [n for n in os.listdir(card.path("Music")) if not n.startswith(".")]
+    except OSError:
+        folders = []
+    for name in artists:
+        want = name.casefold()
+        for f in folders:
+            if f.casefold() == want or primary_artist(f).casefold() == want:
+                rels.update(_audio_under(card, "Music/" + f))
+    return {"songs": songs, "albums": albums, "artists": artists, "rels": sorted(rels)}
+
+
+def remove_disliked(card, found):
+    """Take what disliked() found off the card, and the marks with it: the
+    album and artist marks, and the dislikes of songs now gone. Returns the
+    songs removed, for the playlists to forget."""
+    from .playlists import write_atomic
+    gone = delete_songs(card, found["rels"])
+    write_atomic(card.path(*REMOVE_FILE), REMOVE_HEADER + "\n")
+    left = [ln for ln in _lines(card.path(*RATINGS_FILE))
+            if ln and not (ln.endswith("\t-1") and not os.path.isfile(card.full(ln.split("\t")[0])))]
+    if os.path.exists(card.path(*RATINGS_FILE)):
+        write_atomic(card.path(*RATINGS_FILE), "\n".join(left) + ("\n" if left else ""))
+    return gone
+
+
 def delete_songs(card, rels):
     """Remove songs from the card, and their album and artist folders when
     nothing is left in them but pictures."""

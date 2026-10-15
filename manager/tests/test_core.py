@@ -128,6 +128,30 @@ class Featured(CardTest):
         self.assertEqual(sorted(lib["The Beatles"]), ["Abbey Road", "One Night"])
 
 
+class Disliked(CardTest):
+    def test_what_the_pixel_disliked_comes_off(self):
+        keep = ["Music/Blur/Parklife/01 - Girls.mp3", "Music/Beatles Tribute/One/01 - X.mp3"]
+        go = ["Music/Blur/The Great Escape/01 - Stereotypes.mp3",
+              "Music/The Beatles/Abbey Road/01 - Come Together.mp3",
+              "Music/The Beatles feat. Johnny/One Night/01 - Song.mp3",
+              "Music/Blur/Parklife/02 - Tracy Jacks.mp3"]
+        for r in keep + go:
+            self.put(r)
+        self.put("Music/.zune/remove.tsv", ("# header\nalbum\tMusic/Blur/The Great Escape\n"
+                                            "artist\tThe Beatles\n").encode())
+        self.put("Music/.zune/ratings.tsv", b"Music/Blur/Parklife/02 - Tracy Jacks.mp3\t-1\n"
+                                            b"Music/Gone/x.mp3\t-1\n")
+        found = music.disliked(self.card)
+        self.assertEqual(found["artists"], ["The Beatles"])
+        self.assertEqual(found["rels"], sorted(go), "an act's 'feat.' folder goes with it, a tribute does not")
+        gone = music.remove_disliked(self.card, found)
+        self.assertEqual(sorted(gone), sorted(go))
+        for r in keep:
+            self.assertTrue(os.path.exists(self.card.full(r)))
+        self.assertEqual(music.disliked(self.card)["rels"], [])
+        self.assertNotIn("album", read(self.card.path("Music", ".zune", "remove.tsv")).replace("album<TAB>", ""))
+
+
 class Playlists(CardTest):
     def setUp(self):
         super().setUp()

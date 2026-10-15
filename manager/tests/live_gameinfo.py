@@ -22,6 +22,17 @@ ROMS = [
     ("Game Boy Advance", "Golden Sun (USA, Europe).gba"), ("Game Boy Advance", "Mother 3 (Japan).gba"),
     ("Game Boy Advance", "Castlevania - Aria of Sorrow (USA).gba"), ("Game Boy Advance", "Ninja Five-O (USA).gba"),
     ("Game Boy Advance", "Kuru Kuru Kururin (Europe).gba"),
+    # Harder: short names, other regions' names, subtitles - the looser search.
+    ("Game Boy Advance", "Fire Emblem (USA).gba"), ("Game Boy Advance", "Minish Cap (USA).gba"),
+    ("Game Boy Color", "Link's Awakening DX (USA, Europe).gbc"),
+    ("Game Boy Advance", "Mario & Luigi - Superstar Saga (USA).gba"),
+    ("Game Boy Advance", "Pokemon - Fire Red Version (USA).gba"),
+    ("Game Boy Advance", "Super Mario Advance 4 - Super Mario Bros. 3 (USA).gba"),
+    ("Game Boy", "Donkey Kong Land (USA, Europe).gb"), ("Game Boy Color", "Pokemon Pinball (USA).gbc"),
+    ("Game Boy Advance", "Final Fantasy Tactics Advance (USA).gba"),
+    ("Game Boy Color", "Mega Man Xtreme (USA, Europe).gbc"),
+    ("Game Boy Advance", "Yu-Gi-Oh! - The Eternal Duelist Soul (USA).gba"),
+    ("Game Boy Color", "Harry Potter and the Sorcerer's Stone (USA).gbc"),
 ]
 
 
@@ -35,8 +46,9 @@ def main():
         print("%-4s %-40s -> %s" % (system.replace("Game Boy", "GB").replace(" Color", "C").replace(" Advance", "A"),
                                     gameinfo.rom_title(rom)[:40], r["source"] or "NOT FOUND"))
         if r["source"]:
-            print("       year=%s genre=%s dev=%s score=%s synopsis=%d chars" % (
-                r["year"], r["genre"], r["developer"], r["score"] or "-", len(r["synopsis"])))
+            print("       year=%s genre=%s dev=%s score=%s grade=%s synopsis=%d chars" % (
+                r["year"], r["genre"], r["developer"], r["score"] or "-",
+                gameinfo.grade(r["score"]) or "-", len(r["synopsis"])))
             print("       fact: %s" % (r["fact"][:150] or "-"))
     print("of %d: %s" % (len(ROMS), ", ".join("%s %d" % kv for kv in counts.items())))
 
