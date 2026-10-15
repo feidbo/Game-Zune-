@@ -23,6 +23,7 @@ read it. Everything comes from Wikipedia and Wikidata - free, no key:
                for the words trivia is made of ("originally", "named after",
                "million") and left out when nothing reads like one.
 """
+import difflib
 import json
 import os
 import re
@@ -240,8 +241,12 @@ def _pick(wiki, hits, wants, plats, close, system, by_text):
         sc = max(similar(w, n) for w in wants if w for n in names)
         if sc < close:
             continue
-        # The looser search: every word wanted, in one of its names.
-        if close < CLOSE and not any(_has_all(w, n) for w in wants if w for n in names):
+        # Every word wanted in one of its names, or a spelling all but the
+        # same ("Kirby Dream Land" for "Kirby's Dream Land"): a name short
+        # of a word is another game - "Donkey Kong Land" is not "Donkey
+        # Kong", which both searches took on the live run.
+        if not any(_has_all(w, n) or difflib.SequenceMatcher(None, w, n).ratio() >= 0.9
+                   for w in wants if w for n in names):
             continue
         on = max([plats.get(p, 0) for p in _qids(ent, "P400")] or [0])
         if not on and by_text and not _qids(ent, "P400") and sc >= 0.85:
