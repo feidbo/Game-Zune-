@@ -212,6 +212,18 @@ def _names(ent, page):
     return [label, re.sub(r"\s*\((?:[^)]*video game|[^)]*game)\)$", "", page)] + aliases
 
 
+def _has_all(want, got):
+    """Every word of `want` in `got`, spacing aside: "pokemon fire red" is in
+    "pokemon firered and leafgreen". What the looser search asks besides
+    alikeness, so a name missing a word is never taken - "Donkey Kong Land"
+    found "Donkey Kong (1994)" on the live run without it."""
+    if not want or not got:
+        return False
+    if set(want.split()) <= set(got.split()):
+        return True
+    return want.replace(" ", "") in got.replace(" ", "")
+
+
 def _pick(wiki, hits, wants, plats, close, system, by_text):
     """The best of `hits` - [(page, qid)] - that is a game on this system
     and named like one of `wants`, or None. `by_text`: an item that names no
@@ -224,8 +236,12 @@ def _pick(wiki, hits, wants, plats, close, system, by_text):
         ent = ents.get(qid) or {}
         if set(_qids(ent, "P31")) & NOT_A_GAME or re.search(r"\b(series|franchise)\b", t, re.I):
             continue
-        sc = max(similar(w, _core(n)) for w in wants if w for n in _names(ent, t) if n)
+        names = [_core(n) for n in _names(ent, t) if n]
+        sc = max(similar(w, n) for w in wants if w for n in names)
         if sc < close:
+            continue
+        # The looser search: every word wanted, in one of its names.
+        if close < CLOSE and not any(_has_all(w, n) for w in wants if w for n in names):
             continue
         on = max([plats.get(p, 0) for p in _qids(ent, "P400")] or [0])
         if not on and by_text and not _qids(ent, "P400") and sc >= 0.85:
@@ -315,11 +331,17 @@ def _clean_value(v):
 
 
 def review_table(wikitext, system):
-    """{critic: score} from the article's "Video game reviews" table, for
-    this system where the table names systems."""
-    m = re.search(r"\{\{\s*Video game reviews", wikitext, re.I)
-    if not m:
-        return {}
+    """{critic: score} from the article's "Video game reviews" tables, for
+    this system where a table names systems: the first table with anything
+    for it (an article with a remake carries a table for each)."""
+    for m in re.finditer(r"\{\{\s*Video game reviews", wikitext, re.I):
+        got = _one_table(wikitext, m, system)
+        if got:
+            return got
+    return {}
+
+
+def _one_table(wikitext, m, system):
     # The template's own braces, nested ones included.
     depth, i = 0, m.start()
     while i < len(wikitext):

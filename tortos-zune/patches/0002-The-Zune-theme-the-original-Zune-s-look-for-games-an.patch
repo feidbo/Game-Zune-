@@ -1,4 +1,4 @@
-From 3d215d843a5eb75d2ebc32a8b674c9e20a69d4a2 Mon Sep 17 00:00:00 2001
+From 3c11bb7dc77f368a7257570d1b91c509d1e7f435 Mon Sep 17 00:00:00 2001
 From: Claude <noreply@anthropic.com>
 Date: Tue, 13 Oct 2026 20:31:25 +0000
 Subject: [PATCH 2/2] The Zune theme: the original Zune's look, for games and
@@ -66,6 +66,20 @@ the Zune 30, 80 and 120, the players with buttons - drew itself.
   /usr/share/splash/frames.bin, TortOS/zune-splash.bin goes there while
   the theme is the Zune's, TortOS's own kept beside it (and on the card)
   and put back when it is not. Done after the first frame.
+- In a game, the in-game menu's Song row shows what plays: left and right
+  skip back and on, A pauses and plays (or shuffles everything). On the
+  menus, L1 and R1 skip the song too.
+- Screen off is three switches on the Pixel 2: bl_power, a level of 0, and
+  the panel's own DPMS through the display engine, each reported in the
+  log. The power-off animation is the Zune's in its theme, and the boot
+  animation is put right at power-off as well as after the first frame.
+- Genres are the Zune's short list: a tag is read as one of about twenty
+  broad genres, and a genre of one album is folded into "other".
+- Albums and artists can be disliked (X, "dislike ...: remove on sync"),
+  kept in Music/.zune/remove.tsv for the Game Zune app to take off the
+  card, with a broken heart on the row and a note saying so.
+- Game scores are grades, A to F with + and -, in the list and large on
+  the game page.
 - The fonts and the background are opened when the theme first draws,
   so the other themes pay nothing for it.
 
@@ -78,24 +92,24 @@ the theme's Controls pages.
  src/controls.c         |   48 +-
  src/controls.h         |    5 +-
  src/device/brick.c     |   10 +-
- src/device/pixel2.c    |   19 +-
- src/game_menu.c        |    3 +-
- src/game_menu.h        |    4 +-
- src/main.c             |  976 +++++++++++++++++++--
- src/muselib.c          |  104 ++-
+ src/device/pixel2.c    |  111 ++-
+ src/game_menu.c        |   16 +-
+ src/game_menu.h        |    7 +-
+ src/main.c             | 1055 ++++++++++++++++++--
+ src/muselib.c          |  104 +-
  src/muselib.h          |    6 +
  src/sys_menu.c         |    1 +
  src/sys_menu.h         |    7 +-
- src/ui.c               |   52 ++
+ src/ui.c               |   52 +
  src/ui.h               |    6 +
- src/zune.c             |  789 +++++++++++++++++
+ src/zune.c             |  789 +++++++++++++++
  src/zune.h             |  172 ++++
- src/zune_games.h       |  546 ++++++++++++
- src/zune_music.h       | 1900 ++++++++++++++++++++++++++++++++++++++++
+ src/zune_games.h       |  585 +++++++++++
+ src/zune_music.h       | 2131 ++++++++++++++++++++++++++++++++++++++++
  tools/controls-check.c |   10 +-
- tools/menu-check.c     |    9 +-
- tools/muselib-check.c  |   53 ++
- 21 files changed, 4629 insertions(+), 104 deletions(-)
+ tools/menu-check.c     |   17 +-
+ tools/muselib-check.c  |   53 +
+ 21 files changed, 5090 insertions(+), 108 deletions(-)
  create mode 100644 src/zune.c
  create mode 100644 src/zune.h
  create mode 100644 src/zune_games.h
@@ -258,15 +272,116 @@ index 752b2e1..b7695f5 100644
  	}
  #ifdef __linux__
 diff --git a/src/device/pixel2.c b/src/device/pixel2.c
-index 19b6554..85e479d 100644
+index 19b6554..79e2538 100644
 --- a/src/device/pixel2.c
 +++ b/src/device/pixel2.c
-@@ -787,11 +787,22 @@ void plat_settings_init(void)
+@@ -20,6 +20,8 @@
+ #include <SDL_syswm.h>
+ 
+ #include <dirent.h>
++#include <drm/drm.h>
++#include <drm/drm_mode.h>
+ #include <fcntl.h>
+ #include <linux/input.h>
+ #include <signal.h>
+@@ -627,13 +629,20 @@ static int clampi(int v, int lo, int hi)
+ 	return v < lo ? lo : (v > hi ? hi : v);
+ }
+ 
+-static void write_file(const char *path, const char *text)
++static bool write_file_ok(const char *path, const char *text)
+ {
+ 	int fd = open(path, O_WRONLY | O_CLOEXEC);
++	bool ok;
+ 
+-	if (fd < 0) return;
+-	if (write(fd, text, strlen(text)) < 0) { /* best effort */ }
++	if (fd < 0) return false;
++	ok = write(fd, text, strlen(text)) == (ssize_t)strlen(text);
+ 	close(fd);
++	return ok;
++}
++
++static void write_file(const char *path, const char *text)
++{
++	(void)write_file_ok(path, text);           /* best effort */
+ }
+ 
+ static int read_int(const char *path)
+@@ -787,11 +796,99 @@ void plat_settings_init(void)
  	apply_brightness(cur_bright);
  }
  
 -/* Off and back on at the same level: bl_power, the backlight's own switch, so
 - * the brightness is not touched. Muse's pocket lock. */
++/* The panel itself, off and on: DPMS on its connector, the display engine's
++ * own switch, which powers the panel down where the backlight's two
++ * switches below only dim what lights it. Reported 2026-10-15: locked, the
++ * screen still glowed with both written. Found once, by name, through the
++ * kernel's mode-setting ioctls on SDL's DRM handle (the launcher holds
++ * master whenever it is drawing), so no libdrm. */
++static uint32_t dpms_conn, dpms_prop;
++static int      dpms_state = -1;         /* -1 not looked for, 0 none here, 1 found */
++
++static void dpms_find(void)
++{
++	struct drm_mode_card_res res;
++	uint32_t conns[16];
++	unsigned i, k, nc;
++
++	dpms_state = 0;
++	memset(&res, 0, sizeof res);
++	if (drm_fd < 0 || ioctl(drm_fd, DRM_IOCTL_MODE_GETRESOURCES, &res) != 0) return;
++	nc = res.count_connectors < 16 ? res.count_connectors : 16;
++	memset(&res, 0, sizeof res);
++	res.count_connectors = nc;
++	res.connector_id_ptr = (uint64_t)(uintptr_t)conns;
++	if (ioctl(drm_fd, DRM_IOCTL_MODE_GETRESOURCES, &res) != 0) return;
++	for (i = 0; i < nc && dpms_state != 1; i++) {
++		struct drm_mode_get_connector c;
++		uint32_t props[64];
++		uint64_t vals[64];
++		unsigned np;
++
++		memset(&c, 0, sizeof c);
++		c.connector_id = conns[i];
++		if (ioctl(drm_fd, DRM_IOCTL_MODE_GETCONNECTOR, &c) != 0) continue;
++		np = c.count_props < 64 ? c.count_props : 64;
++		memset(&c, 0, sizeof c);
++		c.connector_id = conns[i];
++		c.count_props = np;
++		c.props_ptr = (uint64_t)(uintptr_t)props;
++		c.prop_values_ptr = (uint64_t)(uintptr_t)vals;
++		if (ioctl(drm_fd, DRM_IOCTL_MODE_GETCONNECTOR, &c) != 0 || c.connection != 1) continue;
++		for (k = 0; k < np; k++) {
++			struct drm_mode_get_property pr;
++
++			memset(&pr, 0, sizeof pr);
++			pr.prop_id = props[k];
++			if (ioctl(drm_fd, DRM_IOCTL_MODE_GETPROPERTY, &pr) == 0 && !strcmp(pr.name, "DPMS")) {
++				dpms_conn = conns[i];
++				dpms_prop = props[k];
++				dpms_state = 1;
++				break;
++			}
++		}
++	}
++	if (dpms_state != 1) fprintf(stderr, "backlight: no DPMS on the panel's connector\n");
++}
++
++static bool dpms_set(bool on)
++{
++	struct drm_mode_connector_set_property s;
++
++	if (dpms_state < 0) dpms_find();
++	if (dpms_state != 1) return false;
++	memset(&s, 0, sizeof s);
++	s.value = on ? DRM_MODE_DPMS_ON : DRM_MODE_DPMS_OFF;
++	s.prop_id = dpms_prop;
++	s.connector_id = dpms_conn;
++	return ioctl(drm_fd, DRM_IOCTL_MODE_SETPROPERTY, &s) == 0;
++}
++
 +/* Off and back on at the same level - the pocket lock and Screen Off. Off is
 + * both switches: bl_power, the backlight's own, and the level at 0, which the
 + * PWM driver takes as the light, its enable line and its supply all off. One
@@ -278,16 +393,25 @@ index 19b6554..85e479d 100644
  {
 -	write_file(BACKLIGHT_POWER, on ? "0\n" : "4\n");
 +	if (on) {
++		/* The panel first, so the light comes up on a picture. */
++		bool panel = dpms_set(true);
++
 +		apply_brightness(cur_bright);
 +		write_file(BACKLIGHT_POWER, "0\n");
++		fprintf(stderr, "backlight: on (panel %s)\n", panel ? "on" : "not switched");
 +	} else {
-+		write_file(BACKLIGHT_POWER, "4\n");
-+		write_file(BACKLIGHT, "0\n");
++		bool p = write_file_ok(BACKLIGHT_POWER, "4\n");
++		bool l = write_file_ok(BACKLIGHT, "0\n");
++		bool d = dpms_set(false);
++
++		/* Each switch said, so a log shows which one a lit screen got past. */
++		fprintf(stderr, "backlight: off - bl_power %s, level 0 %s, panel %s\n",
++		        p ? "written" : "REFUSED", l ? "written" : "REFUSED", d ? "off" : "not switched");
 +	}
  }
  
  /* The windows differ by jack, so the level is re-applied when a plug goes in
-@@ -915,7 +926,7 @@ bool plat_battery(int *pct, bool *charging)
+@@ -915,7 +1012,7 @@ bool plat_battery(int *pct, bool *charging)
  
  	if (fake && *fake) {
  		if (pct) *pct = atoi(fake);
@@ -297,34 +421,54 @@ index 19b6554..85e479d 100644
  	}
  	if ((v = read_int("/sys/class/power_supply/battery/capacity")) < 0) return false;
 diff --git a/src/game_menu.c b/src/game_menu.c
-index c5f1a93..60fed81 100644
+index c5f1a93..22a6958 100644
 --- a/src/game_menu.c
 +++ b/src/game_menu.c
-@@ -89,12 +89,13 @@ int gi_rows(menu_row *out, const game_info *gi, bool net)
+@@ -1,6 +1,7 @@
+ /* The game info screen's rows. See src/game_menu.h. */
+ #include <stddef.h>
+ #include <stdio.h>
++#include <string.h>
+ 
+ #include "game_menu.h"
+ 
+@@ -89,12 +90,25 @@ int gi_rows(menu_row *out, const game_info *gi, bool net)
  int gm_rows(const gm_ui *u, menu_row *out, gm_bufs *b)
  {
  	static const char *label[GM_ROWS] = {
 -		"Continue", "Save", "Load", "Display", "Cheevos", "Reset", "Quit"
-+		"Continue", "Save", "Load", "Display", "Sound", "Cheevos", "Reset", "Quit"
++		"Continue", "Save", "Load", "Display", "Sound", "Song", "Cheevos", "Reset", "Quit"
  	};
  	int i;
  
  	for (i = 0; i < GM_ROWS; i++) out[i] = (menu_row){ label[i], NULL, true };
  	out[GM_DISPLAY].value = u->dmode;
 +	out[GM_SOUND].value = u->sound;
++	/* The song, cut to what the row's value column holds, with "<" and ">"
++	 * for what left and right do; "shuffle all" when nothing is loaded,
++	 * which is what A starts then. */
++	if (u->song && u->song[0]) {
++		size_t len = strlen(u->song);
++
++		if (len > 24) snprintf(b->song, sizeof b->song, "< %.21s... >", u->song);
++		else snprintf(b->song, sizeof b->song, "< %s >", u->song);
++	} else {
++		snprintf(b->song, sizeof b->song, "shuffle all");
++	}
++	out[GM_SONG].value = b->song;
  
  	/* Most of a library has no set, and a row that says so plainly is better
  	 * than one that is missing: "none" answers the question the player opened
 diff --git a/src/game_menu.h b/src/game_menu.h
-index 6190116..1a1ece1 100644
+index 6190116..4df9f93 100644
 --- a/src/game_menu.h
 +++ b/src/game_menu.h
-@@ -101,13 +101,15 @@ int gi_rows(menu_row *out, const game_info *gi, bool net);
+@@ -101,20 +101,23 @@ int gi_rows(menu_row *out, const game_info *gi, bool net);
  /* ---------- the in-game menu ---------------------------------------------- */
  
  typedef enum {
 -	GM_CONTINUE, GM_SAVE, GM_LOAD, GM_DISPLAY, GM_CHEEVOS, GM_RESET, GM_QUIT,
-+	GM_CONTINUE, GM_SAVE, GM_LOAD, GM_DISPLAY, GM_SOUND, GM_CHEEVOS, GM_RESET, GM_QUIT,
++	GM_CONTINUE, GM_SAVE, GM_LOAD, GM_DISPLAY, GM_SOUND, GM_SONG, GM_CHEEVOS, GM_RESET, GM_QUIT,
  	GM_ROWS
  } gm_row;
  
@@ -333,14 +477,23 @@ index 6190116..1a1ece1 100644
  	const char *dmode;    /* the display mode's label */
 +	const char *sound;    /* what is heard: the game, or the music (ADR-0032
 +	                         quiets the game while the music plays) */
++	const char *song;     /* the song loaded, "" for none: left and right skip it */
  	int         earned;
  	int         total;    /* 0: this game has no achievement set */
  } gm_ui;
+ 
+ /* Where the Cheevos row's text lives; the caller owns it, because a row holds
+  * a pointer rather than a copy. */
+-typedef struct { char cheevos[24]; } gm_bufs;
++typedef struct { char cheevos[24]; char song[40]; } gm_bufs;
+ 
+ int gm_rows(const gm_ui *u, menu_row *out, gm_bufs *b);
+ 
 diff --git a/src/main.c b/src/main.c
-index 6ae0cad..7487669 100644
+index 6ae0cad..574b0ef 100644
 --- a/src/main.c
 +++ b/src/main.c
-@@ -51,6 +51,7 @@
+@@ -51,11 +51,13 @@
  #include "game_menu.h"
  #include "ui.h"
  #include "wifi_menu.h"
@@ -348,7 +501,13 @@ index 6ae0cad..7487669 100644
  
  #include <SDL.h>
  #include <SDL_image.h>
-@@ -443,6 +444,64 @@ static SDL_Texture *load_image(SDL_Renderer *r, const char *path, int *w, int *h
+ #include <ctype.h>
+ #include <dirent.h>
++#include <errno.h>
+ #include <math.h>
+ #include <signal.h>
+ #include <stdio.h>
+@@ -443,6 +445,64 @@ static SDL_Texture *load_image(SDL_Renderer *r, const char *path, int *w, int *h
  static int g_cards;
  static int g_dir;
  
@@ -413,7 +572,7 @@ index 6ae0cad..7487669 100644
  /* Muse: what the Music folder holds, read at boot and on every rescan, and
   * the green its card is drawn in - the iPod's own, sampled from the photograph
   * (tools/genmusecard.py draws both cards from the same value).
-@@ -482,6 +541,9 @@ static bool g_muse_books;
+@@ -482,6 +542,9 @@ static bool g_muse_books;
   * rebuilt with it, like g_cov. A finished book is marked and not forgotten,
   * and A on it starts it over. Eric's, 2026-09-27. */
  static bool *g_book_done;
@@ -423,7 +582,7 @@ index 6ae0cad..7487669 100644
  
  /* The kind the shelf really shows: the one chosen, unless there is none of it
   * and some of the other. */
-@@ -2761,6 +2823,7 @@ static void redraw_now(void)    { g_redraw_at = 0; }
+@@ -2761,6 +2824,7 @@ static void redraw_now(void)    { g_redraw_at = 0; }
  static void draw_background(app *a)
  {
  	SDL_Renderer *r = a->r;
@@ -431,7 +590,7 @@ index 6ae0cad..7487669 100644
  	SDL_SetRenderDrawColor(r, UI_BG_R, UI_BG_G, UI_BG_B, 255);
  	SDL_RenderClear(r);
  	/* A wash of the focused system's color along the bottom edge, so the
-@@ -2793,12 +2856,12 @@ static void shelf_pacing(coverflow *cf)
+@@ -2793,12 +2857,12 @@ static void shelf_pacing(coverflow *cf)
  	 * slower smoothed chase is what a turning solid needs. The two share the
  	 * `.vertical` flag because they share an INPUT axis, which is a different
  	 * question from how they are drawn. */
@@ -446,7 +605,7 @@ index 6ae0cad..7487669 100644
  		/* THE DURATION IS FIXED BUT THE DISTANCE IS NOT. ANIM_MS is 240ms
  		 * whatever the travel, and Vertical shows one card at a time, so a
  		 * step moves 878px where the horizontal row moves 400. At the shared
-@@ -3044,10 +3107,455 @@ furniture:
+@@ -3044,10 +3108,474 @@ furniture:
  	}
  }
  
@@ -575,14 +734,22 @@ index 6ae0cad..7487669 100644
 +	if (zune_ui()) {
 +		snprintf(mine_path, sizeof mine_path, "%s/zune-splash.bin", P_ROOT);
 +		want = splash_read(mine_path, &nwant);
-+		if (want && memcmp(want, "TSPL", 4) == 0 && (nwant != nlive || memcmp(want, live, (size_t)nlive))) {
++		if (!want || nwant < 12 || memcmp(want, "TSPL", 4) != 0) {
++			fprintf(stderr, "zune: no boot animation at %s\n", mine_path);
++		} else if (nwant != nlive || memcmp(want, live, (size_t)nlive)) {
 +			/* TortOS's own, kept before anything replaces it. */
 +			if (access(SPLASH_STOCK, F_OK) != 0) {
 +				snprintf(card_copy, sizeof card_copy, "%s/splash.stock.bin", P_ROOT);
 +				if (splash_write(SPLASH_STOCK, live, nlive)) splash_write(card_copy, live, nlive);
++				else fprintf(stderr, "zune: could not keep TortOS's boot animation: %s\n",
++				             strerror(errno));
 +			}
-+			if (access(SPLASH_STOCK, F_OK) == 0 && splash_write(SPLASH_LIVE, want, nwant))
++			if (access(SPLASH_STOCK, F_OK) != 0)
++				;   /* said above: nothing replaced without the original kept */
++			else if (splash_write(SPLASH_LIVE, want, nwant))
 +				fprintf(stderr, "zune: the boot animation is the Zune's\n");
++			else
++				fprintf(stderr, "zune: could not write the boot animation: %s\n", strerror(errno));
 +		}
 +	} else if ((want = splash_read(SPLASH_STOCK, &nwant)) &&
 +	           (nwant != nlive || memcmp(want, live, (size_t)nlive))) {
@@ -659,6 +826,17 @@ index 6ae0cad..7487669 100644
 +{
 +	const char *names[ZTOP_MAX];
 +	int what[ZTOP_MAX], sys[CFG_MAX_SYSTEMS], n, cur, step;
++
++	/* L1 and R1 skip the song from the menus too, while one is loaded: the
++	 * music should not need Now Playing to change (2026-10-15). */
++	{
++		mu_state st = musec_now()->state;
++
++		if (st == MU_PLAYING || st == MU_PAUSED) {
++			if (in_repeat(&a->in, IN_L1)) { musec_prev(); redraw_now(); }
++			if (in_repeat(&a->in, IN_R1)) { musec_next(); redraw_now(); }
++		}
++	}
 +
 +	if (g_zlevel == 0) {
 +		n = ztop_items(a, names, what);
@@ -903,7 +1081,7 @@ index 6ae0cad..7487669 100644
  
  	SDL_Rect focus;
  	const system_cfg *s = &a->sys.systems[a->sys_cursor];
-@@ -3058,7 +3566,7 @@ static void draw_systems(app *a)
+@@ -3058,7 +3586,7 @@ static void draw_systems(app *a)
  	 * a game into paging through a catalog. */
  	/* Vertical stacks the same row down the screen. Cubic is excluded: it
  	 * does not draw this row at all. */
@@ -912,7 +1090,7 @@ index 6ae0cad..7487669 100644
  	                           ? &CF_LAYOUT_SYSTEMS_V : &CF_LAYOUT_SYSTEMS);
  
  	cf_focus_rect(&lay, TORTOS_SCREEN_W, TORTOS_SCREEN_H, &focus);
-@@ -3083,7 +3591,7 @@ static void draw_systems(app *a)
+@@ -3083,7 +3611,7 @@ static void draw_systems(app *a)
  	const system_cfg *label = s;
  	float label_a = 1.0f;
  
@@ -921,7 +1099,7 @@ index 6ae0cad..7487669 100644
  		int li = 0;
  
  		label_a = cf_label(&a->cf_sys, a->sys.count, &li);
-@@ -3132,7 +3640,7 @@ static void draw_systems(app *a)
+@@ -3132,7 +3660,7 @@ static void draw_systems(app *a)
  	}
  	ui_text(a->r, ui_font(UI_F_META), line, TORTOS_SCREEN_W / 2, 690, 0,
  	        ui_fade(UI_TEXT_DIM, label_a));
@@ -930,7 +1108,7 @@ index 6ae0cad..7487669 100644
  		(a->r, TORTOS_SCREEN_W, TORTOS_SCREEN_H, a->cf_sys.pos, a->sys.count,
  		 s->accent, rail_sys_hue, a);
  }
-@@ -3367,9 +3875,9 @@ static void draw_game_text(app *a, sysview *v, const system_cfg *s, int idx)
+@@ -3367,9 +3895,9 @@ static void draw_game_text(app *a, sysview *v, const system_cfg *s, int idx)
  		 * Cubic draws the same string in the same place, from its own caller,
  		 * after the cube; baked into a face it would turn away mid-move and two
  		 * would show at once, one per face, disagreeing by one. */
@@ -942,7 +1120,7 @@ index 6ae0cad..7487669 100644
  				ui_text(a->r, ui_font(UI_F_META), count, 24, 700,
  				        -1, UI_TEXT_DIM);
  			else
-@@ -3418,7 +3926,8 @@ static void draw_games(app *a)
+@@ -3418,7 +3946,8 @@ static void draw_games(app *a)
  {
  	shelf_pacing(&a->view[a->sys_cursor].cf);
  	shelf_pacing(&a->cf_sys);
@@ -952,7 +1130,7 @@ index 6ae0cad..7487669 100644
  
  	sysview *v = &a->view[a->sys_cursor];
  	const system_cfg *s = &a->sys.systems[a->sys_cursor];
-@@ -3430,7 +3939,7 @@ static void draw_games(app *a)
+@@ -3430,7 +3959,7 @@ static void draw_games(app *a)
  	ui_glow(a->r, &focus, s->accent, 100, 2.3f);
  	if (cf_draw(&v->cf, a->r, TORTOS_SCREEN_W, TORTOS_SCREEN_H, v->list.count,
  	            game_get_tex, a,
@@ -961,7 +1139,7 @@ index 6ae0cad..7487669 100644
  	            : albums ? &CF_LAYOUT_ALBUMS_V : &CF_LAYOUT_GAMES_V))
  		redraw_now();
  	/* Warm where the move is about to cut to, one card per frame, underneath
-@@ -3444,7 +3953,7 @@ static void draw_games(app *a)
+@@ -3444,7 +3973,7 @@ static void draw_games(app *a)
  	if (!cf_cutting(&v->cf)) evict_far(v, TEX_KEEP_NEAR);
  
  	draw_game_text(a, v, s, v->cursor);
@@ -970,7 +1148,7 @@ index 6ae0cad..7487669 100644
  		(a->r, TORTOS_SCREEN_W, TORTOS_SCREEN_H, v->cf.pos, v->list.count,
  		 s->accent, NULL, NULL);
  }
-@@ -3498,7 +4007,8 @@ static void draw_shelf(app *a)
+@@ -3498,7 +4027,8 @@ static void draw_shelf(app *a)
  	if (a->sys.count <= 0) draw_no_games(a);
  	else if (a->screen == SCREEN_SYSTEMS) draw_systems(a);
  	else draw_games(a);
@@ -980,7 +1158,67 @@ index 6ae0cad..7487669 100644
  }
  
  static void render(app *a)
-@@ -3781,6 +4291,8 @@ static void menu_draw_ex(app *a, const char *heading, const menu_row *rows,
+@@ -3613,6 +4143,39 @@ static void anim_launch(app *a, unsigned ms)
+  * closed shell is its last frame. power_off turns the backlight off right
+  * after, rather than leaving the shell lit until the kernel cuts the panel
+  * (which is how it was until 2026-10-02). */
++/* The Zune theme's goodbye: the boot animation's last frame - "zune" in
++ * white over its magenta line - fading to black, the line drawing back in
++ * first. Black at the end, the way the Zune went off. */
++static void zune_poweroff(app *a)
++{
++	const unsigned ms = 700;
++	TTF_Font *f = zune_font(ZF_MENU);
++	unsigned t0 = plat_now_ms(), now;
++	int tw = 0, th = 0;
++
++	if (f) TTF_SizeUTF8(f, "zune", &tw, &th);
++	while ((now = plat_now_ms()) - t0 <= ms) {
++		float k = (float)(now - t0) / (float)ms, line = 1.0f - fminf(1.0f, k * 1.6f);
++		Uint8 v = (Uint8)(255 * (1.0f - k) * (1.0f - k));
++		int cx = TORTOS_SCREEN_W / 2, cy = TORTOS_SCREEN_H / 2 - 16;
++
++		SDL_SetRenderDrawColor(a->r, 0, 0, 0, 255);
++		SDL_RenderClear(a->r);
++		zune_text(a->r, f, "zune", cx, cy - th / 2, 0, (SDL_Color){ v, v, v, 255 });
++		if (line > 0) {
++			int lw = (int)(220 * line);
++
++			SDL_SetRenderDrawColor(a->r, 0xEC, 0x00, 0x8C, (Uint8)(255 * line));
++			SDL_RenderFillRect(a->r, &(SDL_Rect){ cx - 110, cy + th / 2 + 20, lw, 8 });
++		}
++		plat_present();
++		SDL_Delay(6);
++	}
++	SDL_SetRenderDrawColor(a->r, 0, 0, 0, 255);
++	SDL_RenderClear(a->r);
++	plat_present();
++}
++
+ static void anim_poweroff(app *a)
+ {
+ 	const unsigned T_IN = 430, T_HEAD = 260, T_DIM = 210;
+@@ -3621,6 +4184,7 @@ static void anim_poweroff(app *a)
+ 	const float rad = 46.0f;
+ 	unsigned t0 = plat_now_ms(), now;
+ 
++	if (zune_ui()) { zune_poweroff(a); return; }
+ 	while ((now = plat_now_ms()) - t0 < ms) {
+ 		unsigned t = now - t0;
+ 		float x = cx, head = 1.0f, dim = 0.0f;
+@@ -3662,6 +4226,11 @@ static void power_off(app *a)
+ 	book_keep(true);
+ 	plat_request_poweroff();
+ 	anim_poweroff(a);
++	/* The boot animation put right for the next start, whatever happened
++	 * since this one - the timed swap after the first frame may never have
++	 * come round (2026-10-15: the TortOS animation still showed). Nothing
++	 * is written when it is already right. */
++	zune_splash_sync();
+ 	/* And dark the moment it ends. The rest of the shutdown is not instant -
+ 	 * on the GKD Pixel 2 it waits for the programs on the card to go before
+ 	 * unmounting it - and the shell stayed lit through all of it. Eric's
+@@ -3781,6 +4350,8 @@ static void menu_draw_ex(app *a, const char *heading, const menu_row *rows,
  {
  	TTF_Font *fm = ui_font(UI_F_MENU), *fh = ui_font(UI_F_LABEL);
  	int row_h = menu_row_h();
@@ -989,7 +1227,7 @@ index 6ae0cad..7487669 100644
  	int pad = menu_pad();
  	/* A rule is 2px of bar plus the gap the heading's rule gets below it, so
  	 * the footer sits off the list by the same amount the first row sits off
-@@ -6637,7 +7149,7 @@ static bool stats_screen(app *a)
+@@ -6637,7 +7208,7 @@ static bool stats_screen(app *a)
  					 * written for a mode that enters, shipped to one that
  					 * does not, and the lesson recorded was that three UI
  					 * directions are three code paths. */
@@ -998,7 +1236,7 @@ index 6ae0cad..7487669 100644
  						cf_reset(&a->cf_sys, a->sys_cursor);
  						cf_reset(&a->view[si].cf, a->view[si].cursor);
  					} else {
-@@ -6766,8 +7278,9 @@ static void about_screen(app *a)
+@@ -6766,8 +7337,9 @@ static void about_screen(app *a)
   * follows UI Direction, because which axis moves is what that setting does. */
  static ctl_dir controls_dir(void)
  {
@@ -1010,7 +1248,7 @@ index 6ae0cad..7487669 100644
  	return CTL_HORIZONTAL;
  }
  
-@@ -7078,6 +7591,50 @@ static int sysmenu_build(void *ctx, menu_row *rows, int max,
+@@ -7078,6 +7650,50 @@ static int sysmenu_build(void *ctx, menu_row *rows, int max,
  	return n > max ? max : n;
  }
  
@@ -1061,7 +1299,7 @@ index 6ae0cad..7487669 100644
  /* Left and right cycle the value on a row that has one; A opens whatever the
   * row leads to. Everything else the runner has already dealt with. */
  static menu_result sysmenu_key(app *a, void *ctx, in_button key, int sel)
-@@ -7154,38 +7711,7 @@ static menu_result sysmenu_key(app *a, void *ctx, in_button key, int sel)
+@@ -7154,38 +7770,7 @@ static menu_result sysmenu_key(app *a, void *ctx, in_button key, int sel)
  		 * to sit in the old order is not. On Muse's shelf the same goes for
  		 * the album, whose folder is its `file`. */
  		if (d && sel == SM_SORT) {
@@ -1101,7 +1339,7 @@ index 6ae0cad..7487669 100644
  			return MENU_STAY;
  		}
  		if (key != IN_ACCEPT) return MENU_STAY;
-@@ -7237,10 +7763,11 @@ static menu_result sysmenu_key(app *a, void *ctx, in_button key, int sel)
+@@ -7237,10 +7822,11 @@ static menu_result sysmenu_key(app *a, void *ctx, in_button key, int sel)
  	 * is rebuilt: the panel's cached width is measured from font metrics, and
  	 * any card generated for a game with no box art has its title baked in at
  	 * the old size. Both are dropped here rather than left subtly wrong. */
@@ -1117,7 +1355,7 @@ index 6ae0cad..7487669 100644
  	 *
  	 * Themes the systems shelf today. The name is deliberately wider than
  	 * that, so menu colors or the accent rule can join without the row having
-@@ -7250,6 +7777,8 @@ static menu_result sysmenu_key(app *a, void *ctx, in_button key, int sel)
+@@ -7250,6 +7836,8 @@ static menu_result sysmenu_key(app *a, void *ctx, in_button key, int sel)
  
  		if (k != g_cards) {
  			g_cards = k;
@@ -1126,7 +1364,7 @@ index 6ae0cad..7487669 100644
  			free_all_textures(a);
  			prime_sys_window(a);
  			db_set_str(db_dev(), "cards", CARD_SETS[g_cards].id);
-@@ -7299,6 +7828,8 @@ static menu_result sysmenu_key(app *a, void *ctx, in_button key, int sel)
+@@ -7299,6 +7887,8 @@ static menu_result sysmenu_key(app *a, void *ctx, in_button key, int sel)
  	case PM_BT:           bt_screen(a); break;
  	case PM_CLOCK:        clock_screen(a); break;
  	case PM_STATS:        if (stats_screen(a)) return MENU_DONE; break;
@@ -1135,7 +1373,7 @@ index 6ae0cad..7487669 100644
  	case PM_CONTROLS:     controls_screen(a); break;
  	case PM_ABOUT:        about_screen(a); break;
  	default: break;
-@@ -7324,6 +7855,10 @@ static void tortos_menu_for(app *a, int screen)
+@@ -7324,6 +7914,10 @@ static void tortos_menu_for(app *a, int screen)
  	};
  
  	menu_run(a, &st, sysmenu_build, sysmenu_key, &c);
@@ -1146,15 +1384,20 @@ index 6ae0cad..7487669 100644
  }
  
  static void tortos_menu(app *a)
-@@ -7673,6 +8208,7 @@ static int gm_build(app *a, menu_row *out, gm_bufs *b)
+@@ -7673,6 +8267,12 @@ static int gm_build(app *a, menu_row *out, gm_bufs *b)
  	gm_ui u;
  
  	u.dmode  = DMODES[a->view[a->sys_cursor].dmode].label;
 +	u.sound  = musec_playing() ? (zune_ui() ? "zune music" : "music") : "game";
++	{
++		const mu_now *mn = musec_now();
++
++		u.song = (mn->state == MU_PLAYING || mn->state == MU_PAUSED) ? mn->title : "";
++	}
  	u.earned = chv_earned();
  	u.total  = chv_count();
  	return gm_rows(&u, out, b);
-@@ -8259,6 +8795,7 @@ static unsigned np_draw(app *a, const mu_now *mn, const char *next)
+@@ -8259,6 +8859,7 @@ static unsigned np_draw(app *a, const mu_now *mn, const char *next)
  	/* A book played to its end says so, rather than that it stopped. */
  	if (mn->state == MU_STOPPED && book >= 0 && g_book_done && g_book_done[book])
  		state = "Finished";
@@ -1162,7 +1405,7 @@ index 6ae0cad..7487669 100644
  
  	SDL_SetRenderDrawColor(r, UI_BG_R, UI_BG_G, UI_BG_B, 255);
  	SDL_RenderClear(r);
-@@ -8420,13 +8957,55 @@ static bool lock_allowed(void)
+@@ -8420,13 +9021,55 @@ static bool lock_allowed(void)
  	return musec_playing() && !g_muse_over;
  }
  
@@ -1219,7 +1462,7 @@ index 6ae0cad..7487669 100644
  	if (in_repeat(in, IN_VOLUP)) plat_volume_nudge(+1);
  	if (in_repeat(in, IN_VOLDN)) plat_volume_nudge(-1);
  	if (in->down[IN_BRIGHTUP] && in->down[IN_BRIGHTDN]) {
-@@ -8440,11 +9019,15 @@ static bool muse_keys(app *a)
+@@ -8440,11 +9083,15 @@ static bool muse_keys(app *a)
  	return false;
  }
  
@@ -1237,7 +1480,7 @@ index 6ae0cad..7487669 100644
  	plat_backlight(false);
  	plat_input_flush();
  	memset(&a->in, 0, sizeof a->in);
-@@ -8452,6 +9035,19 @@ static void muse_locked(app *a)
+@@ -8452,6 +9099,19 @@ static void muse_locked(app *a)
  		muse_screen_poll();
  		plat_input_poll(&a->in);
  		if (a->in.quit_requested) { a->running = false; break; }
@@ -1257,7 +1500,7 @@ index 6ae0cad..7487669 100644
  		/* Power, or Auto Off once the music has stopped long enough. The
  		 * light first, so the power-off animation is seen. */
  		if (a->in.pressed[IN_POWER] || idle_due(a)) {
-@@ -8470,6 +9066,47 @@ static void muse_locked(app *a)
+@@ -8470,6 +9130,47 @@ static void muse_locked(app *a)
  	memset(&a->in, 0, sizeof a->in);
  }
  
@@ -1305,7 +1548,7 @@ index 6ae0cad..7487669 100644
  /* MENU, from any Muse screen: Muse's own menu, the one its shelf has always
   * had. One button, one meaning, wherever in Muse it is pressed - it used to
   * close Muse from Now Playing and the tracks, and open this on the shelf.
-@@ -8510,6 +9147,11 @@ static muse_exit muse_now_screen(app *a)
+@@ -8510,6 +9211,11 @@ static muse_exit muse_now_screen(app *a)
  	} shown, drawn;
  	unsigned due = 0;
  	muse_exit how = MUSE_BACK;
@@ -1317,7 +1560,7 @@ index 6ae0cad..7487669 100644
  
  	mq_reset(MQ_NP);
  	memset(&drawn, 0, sizeof drawn);
-@@ -8521,7 +9163,7 @@ static muse_exit muse_now_screen(app *a)
+@@ -8521,7 +9227,7 @@ static muse_exit muse_now_screen(app *a)
  		const char *nt;
  		char next[128] = "";
  		unsigned now;
@@ -1326,7 +1569,7 @@ index 6ae0cad..7487669 100644
  		int b;
  
  		muse_screen_poll();
-@@ -8536,9 +9178,59 @@ static muse_exit muse_now_screen(app *a)
+@@ -8536,9 +9242,59 @@ static muse_exit muse_now_screen(app *a)
  			how = muse_menu(a);
  			if (how != MUSE_BACK) break;
  			memset(&drawn, 0, sizeof drawn);     /* the menu drew over it */
@@ -1386,7 +1629,7 @@ index 6ae0cad..7487669 100644
  		/* A, and only A. X did the same thing here and pausing in the list,
  		 * which made one button mean two things a screen apart; it is left
  		 * free in Muse for something that needs it. Eric's call, 2026-09-19. */
-@@ -8553,10 +9245,15 @@ static muse_exit muse_now_screen(app *a)
+@@ -8553,10 +9309,15 @@ static muse_exit muse_now_screen(app *a)
  		if (in_repeat(&a->in, IN_R1))       musec_next();
  		if (in_repeat(&a->in, IN_LEFT))     musec_seek_by(-seek_step(&a->in, IN_LEFT));
  		if (in_repeat(&a->in, IN_RIGHT))    musec_seek_by(+seek_step(&a->in, IN_RIGHT));
@@ -1403,7 +1646,7 @@ index 6ae0cad..7487669 100644
  			continue;
  		}
  
-@@ -8629,6 +9326,19 @@ static int muse_playing_album(int *row)
+@@ -8629,6 +9390,19 @@ static int muse_playing_album(int *row)
  	const char *t = musec_track(musec_now()->index);
  	int al = ml_album_of(&g_muse, t), i;
  
@@ -1423,7 +1666,7 @@ index 6ae0cad..7487669 100644
  	if (row) *row = 0;
  	if (al < 0) return -1;
  	if (row)
-@@ -8754,9 +9464,13 @@ static muse_exit muse_tracks(app *a, int album, bool now)
+@@ -8754,9 +9528,13 @@ static muse_exit muse_tracks(app *a, int album, bool now)
  						paths[i] = g_muse.tracks[al->first + i].path;
  					/* A book's file from its start: choosing one is choosing
  					 * where to listen from, and the place moves with it. */
@@ -1438,7 +1681,7 @@ index 6ae0cad..7487669 100644
  					free(paths);
  				}
  			}
-@@ -8811,7 +9525,8 @@ static bool muse_open(app *a, const menu_style *over, void *ctx)
+@@ -8811,7 +9589,8 @@ static bool muse_open(app *a, const menu_style *over, void *ctx)
  	g_muse_over = over;
  	g_muse_over_ctx = ctx;
  	g_muse_gone = false;
@@ -1448,7 +1691,7 @@ index 6ae0cad..7487669 100644
  	g_muse_over = NULL;
  	g_muse_over_ctx = NULL;
  	/* Nothing Muse did closes the menu it may have been opened over. */
-@@ -8852,6 +9567,9 @@ static muse_exit muse_album(app *a, const sysview *v, int k)
+@@ -8852,6 +9631,9 @@ static muse_exit muse_album(app *a, const sysview *v, int k)
  	return muse_tracks(a, v->album[k], false);
  }
  
@@ -1458,7 +1701,7 @@ index 6ae0cad..7487669 100644
  /* Muse's shelf again after its menu, whose Rescan Folder rebuilds every view
   * on the card, so the view being held is found again rather than trusted.
   * NULL when there is no Muse left to show. */
-@@ -8901,13 +9619,12 @@ static int muse_card_of(const sysview *v, int album)
+@@ -8901,13 +9683,12 @@ static int muse_card_of(const sysview *v, int album)
  static void muse_shelf_screen(app *a, bool now)
  {
  	int prev_screen = a->screen, prev_sys = a->sys_cursor;
@@ -1474,7 +1717,7 @@ index 6ae0cad..7487669 100644
  	for (i = 0; i < a->sys.count; i++)
  		if (is_muse(&a->sys.systems[i])) { muse = i; break; }
  	if (muse < 0 || a->view[muse].list.count <= 0) return;
-@@ -9014,6 +9731,11 @@ static int muse_artist_of(int al)
+@@ -9014,6 +9795,11 @@ static int muse_artist_of(int al)
  
  static void muse_album_dir(int al, char *out, size_t n)
  {
@@ -1486,7 +1729,7 @@ index 6ae0cad..7487669 100644
  	const char *p = g_muse.albums[al].n > 0 ? g_muse.tracks[g_muse.albums[al].first].path : "";
  	const char *slash = strrchr(p, '/');
  
-@@ -9041,7 +9763,7 @@ static int museart_jobs(museart_job *jobs, int max)
+@@ -9041,7 +9827,7 @@ static int museart_jobs(museart_job *jobs, int max)
  		 * own file or the picture in its folder. Nor Singles, which is no
  		 * record at all and has its own cover. */
  		if (g_muse.albums[i].n <= 0 || g_muse.albums[i].book ||
@@ -1495,15 +1738,16 @@ index 6ae0cad..7487669 100644
  		muse_album_dir(i, dir, sizeof dir);
  		snprintf(key, sizeof key, "museart.%s", dir);
  		ml_cover_base(g_muse_root, &g_muse, i, j->base, sizeof j->base);
-@@ -9447,6 +10169,7 @@ static int gm_width(app *a)
+@@ -9447,6 +10233,8 @@ static int gm_width(app *a)
  	int w = 0, k;
  
  	gm_build(a, rows, &b);
 +	rows[GM_SOUND].value = "zune music";        /* the longest the row says */
++	rows[GM_SONG].value = "< 123456789012345678901... >";   /* and the song's longest */
  	for (k = 0; k < DMODE_COUNT; k++) {
  		int mw;
  		rows[GM_DISPLAY].value = DMODES[k].label;
-@@ -9514,6 +10237,17 @@ static menu_result gm_key(app *a, void *ctx, in_button key, int sel)
+@@ -9514,6 +10302,31 @@ static menu_result gm_key(app *a, void *ctx, in_button key, int sel)
  		gm_cycle_display(a, key == IN_RIGHT ? 1 : -1);
  		return MENU_STAY;
  	}
@@ -1511,6 +1755,20 @@ index 6ae0cad..7487669 100644
 +	 * quiets the game (ADR-0032, followed on every tick). Two values, so
 +	 * left, right and A all turn it over. Music with nothing loaded starts
 +	 * the whole library shuffled, as the Zune's "shuffle all". */
++	/* The song, without leaving the game for Muse: left and right skip back
++	 * and on, A pauses or plays - or starts the whole library shuffled when
++	 * nothing is loaded. The row follows on the next frame (menu_run polls
++	 * Muse every pass). */
++	if (sel == GM_SONG && (key == IN_LEFT || key == IN_RIGHT || key == IN_ACCEPT)) {
++		const mu_state st = musec_now()->state;
++		const bool loaded = st == MU_PLAYING || st == MU_PAUSED;
++
++		if (!loaded) zx_shuffle_all();
++		else if (key == IN_LEFT) musec_prev();
++		else if (key == IN_RIGHT) musec_next();
++		else musec_toggle();
++		return MENU_STAY;
++	}
 +	if (sel == GM_SOUND && (key == IN_LEFT || key == IN_RIGHT || key == IN_ACCEPT)) {
 +		const mu_state st = musec_now()->state;
 +
@@ -1521,7 +1779,7 @@ index 6ae0cad..7487669 100644
  	if (key != IN_ACCEPT) return MENU_STAY;
  
  	switch ((gm_row)sel) {
-@@ -9693,6 +10427,7 @@ static void respawn_resident(app *a)
+@@ -9693,6 +10506,7 @@ static void respawn_resident(app *a)
  
  static void launch(app *a)
  {
@@ -1529,7 +1787,7 @@ index 6ae0cad..7487669 100644
  	sysview *v = &a->view[a->sys_cursor];
  	/* The game's system, not the shelf's. Launching a favorite off the
  	 * Favorites shelf otherwise loads whatever core the shelf claims, which
-@@ -10003,6 +10738,8 @@ static void launch(app *a)
+@@ -10003,6 +10817,8 @@ static void launch(app *a)
  		 * the display, so this side tears its own down first. */
  		anim_launch(a, 190);
  		free_all_textures(a);
@@ -1538,7 +1796,7 @@ index 6ae0cad..7487669 100644
  		ui_quit();
  		plat_input_quit();
  		plat_video_quit();
-@@ -10048,6 +10785,8 @@ static void launch(app *a)
+@@ -10048,6 +10864,8 @@ static void launch(app *a)
  		if (!plat_video_init() || !plat_input_init()) { a->running = false; return; }
  		a->r = plat_renderer();
  		ui_init(a->r, P_FONT);
@@ -1547,7 +1805,7 @@ index 6ae0cad..7487669 100644
  		a->menu_w = 0;   /* fonts reopened: remeasure the panel */
  		prime_sys_window(a);
  		prime_window(a, a->sys_cursor);
-@@ -10126,6 +10865,9 @@ static void enter_system(app *a)
+@@ -10126,6 +10944,9 @@ static void enter_system(app *a)
  	 * own A - see update_games. */
  	if (v->list.count == 0) return;
  	a->screen = SCREEN_GAMES;
@@ -1557,7 +1815,7 @@ index 6ae0cad..7487669 100644
  	cf_reset(&v->cf, v->cursor);
  	prime_window(a, a->sys_cursor);
  }
-@@ -10233,10 +10975,13 @@ static void update_systems(app *a)
+@@ -10233,10 +11054,13 @@ static void update_systems(app *a)
  	 * the first system at the bottom, the last at the top, so up advances.
  	 * Down-is-next is the convention for a list on a page; a stack is read
  	 * from the bottom, and this shelf is a stack. */
@@ -1573,7 +1831,7 @@ index 6ae0cad..7487669 100644
  	if (in_repeat(&a->in, back)) { a->sys_cursor = (a->sys_cursor - 1 + n) % n; dir = -1; }
  	if (in_repeat(&a->in, fwd))  { a->sys_cursor = (a->sys_cursor + 1) % n; dir = +1; }
  	if (dir) load_ahead(a);
-@@ -10314,10 +11059,19 @@ static int shelf_letter_jump(sysview *v, int dir)
+@@ -10314,10 +11138,19 @@ static int shelf_letter_jump(sysview *v, int dir)
  	return shelf_group_start(v, i);
  }
  
@@ -1593,7 +1851,7 @@ index 6ae0cad..7487669 100644
  	if (n <= 0) { a->screen = SCREEN_SYSTEMS; return; }
  	/* MUSE HAS ONE DOOR. Its card used to open its shelf HERE, in the main
  	 * loop, as if it were a console: a second Muse beside the one SELECT
-@@ -10335,21 +11089,23 @@ static void update_games(app *a)
+@@ -10335,21 +11168,23 @@ static void update_games(app *a)
  	 * reassigned onto the other: stepping always runs along the row, and the
  	 * letter jump always runs across it. Turning the shelf turns the d-pad
  	 * with it and nothing is left doing two jobs. */
@@ -1622,7 +1880,7 @@ index 6ae0cad..7487669 100644
  	/* HERE, AND NOT AT THE END OF THE PASS, because four of the handlers below
  	 * return without reaching the end.
  	 *
-@@ -10392,7 +11148,14 @@ static void update_games(app *a)
+@@ -10392,7 +11227,14 @@ static void update_games(app *a)
  		refresh_favorites_shelf(a);
  		return;
  	}
@@ -1638,7 +1896,7 @@ index 6ae0cad..7487669 100644
  }
  
  /* ---------- main ---------------------------------------------------------- */
-@@ -10609,6 +11372,7 @@ static void refresh_favorites_shelf(app *a)
+@@ -10609,6 +11451,7 @@ static void refresh_favorites_shelf(app *a)
  {
  	/* Favorites is rebuilt in place, so its indices now name other games. */
  	texload_bump();
@@ -1646,7 +1904,7 @@ index 6ae0cad..7487669 100644
  	char tag[sizeof a->sys.systems[0].tag];
  	int cur, i, order = 0;
  
-@@ -10691,11 +11455,22 @@ static void muse_order_view(sysview *v)
+@@ -10691,11 +11534,22 @@ static void muse_order_view(sysview *v)
  	if (!v->album) return;
  	v->list.count = ml_shelf_order(&g_muse, (ml_order)v->sort, muse_books_shown(),
  	                               v->album);
@@ -1670,7 +1928,7 @@ index 6ae0cad..7487669 100644
  		snprintf(e->title, sizeof e->title, "%s", g_muse.albums[al].name);
  		muse_album_dir(al, e->file, sizeof e->file);
  	}
-@@ -10743,8 +11518,12 @@ static void muse_tidy_singles(void)
+@@ -10743,8 +11597,12 @@ static void muse_tidy_singles(void)
  	 * allowed to show or skip entries. */
  	while ((e = readdir(d))) {
  		if (e->d_name[0] == '.' || !ml_is_audio(e->d_name)) continue;
@@ -1684,7 +1942,7 @@ index 6ae0cad..7487669 100644
  		    strlen(e->d_name) >= sizeof loose[0])
  			continue;
  		if (nloose == cap) {
-@@ -10823,7 +11602,7 @@ static void flat_albums_find(void)
+@@ -10823,7 +11681,7 @@ static void flat_albums_find(void)
  		const ml_album *al = &g_muse.albums[i];
  		const char *p, *slash;
  
@@ -1693,7 +1951,7 @@ index 6ae0cad..7487669 100644
  		p = g_muse.tracks[al->first].path;            /* Music/<album>/<track> */
  		if (strncmp(p, "Music/", 6) || !(slash = strchr(p + 6, '/')) ||
  		    strchr(slash + 1, '/'))
-@@ -10955,6 +11734,7 @@ static void build_muse_shelf(app *a)
+@@ -10955,6 +11813,7 @@ static void build_muse_shelf(app *a)
  	 * different album at every index. */
  	g_muse_gen++;
  	g_nflat = 0;
@@ -1701,7 +1959,7 @@ index 6ae0cad..7487669 100644
  	ml_free(&g_muse);
  	free(g_cov);
  	g_cov = NULL;
-@@ -11185,6 +11965,14 @@ static const char *shot_kb_text = "correct horse";
+@@ -11185,6 +12044,14 @@ static const char *shot_kb_text = "correct horse";
  static const char *shot_kb_title = "Wi-Fi password";
  static int shot_slots, shot_slot_sel;
  static int shot_jump;               /* letter-jumps to apply before drawing */
@@ -1716,7 +1974,7 @@ index 6ae0cad..7487669 100644
  /* --nowplaying ALBUM [TRACK [SECONDS]], and --paused with it. */
  static int   shot_np = -1, shot_np_track, shot_np_paused;
  static float shot_np_at = 83.0f;
-@@ -11346,6 +12134,7 @@ static void take_shot(app *a)
+@@ -11346,6 +12213,7 @@ static void take_shot(app *a)
  		menu_draw(a, head, rows, n, -1, menu_std_width(a), MENU_ACCENT);
  	}
  	if (shot_np >= 0) np_shot(a);
@@ -1724,7 +1982,7 @@ index 6ae0cad..7487669 100644
  	if (shot_art)
  		art_preview(a, shot_art_now, "4 of 10 systems",
  		            "37 found, 2 missing, 61 already", true);
-@@ -11528,6 +12317,11 @@ int main(int argc, char *argv[])
+@@ -11528,6 +12396,11 @@ int main(int argc, char *argv[])
  		else if (!strcmp(argv[i], "--gamemove") && i + 1 < argc)
  			shot_gamemove = (float)atof(argv[++i]);
  		else if (!strcmp(argv[i], "--info")) shot_info = 1;
@@ -1736,7 +1994,7 @@ index 6ae0cad..7487669 100644
  		else if (!strcmp(argv[i], "--controls")) {
  			shot_controls = 0;
  			if (i + 1 < argc && argv[i + 1][0] >= '0' && argv[i + 1][0] <= '9')
-@@ -11921,6 +12715,7 @@ int main(int argc, char *argv[])
+@@ -11921,6 +12794,7 @@ int main(int argc, char *argv[])
  			 * cover it would ask for is drawn as missing instead - see
  			 * muse_covers_settle. */
  			musec_init(shot_path ? "" : bin, music);
@@ -1744,7 +2002,7 @@ index 6ae0cad..7487669 100644
  			musec_on_before_heard(aout_before_muse);
  		}
  		/* The play mode the player left it in. */
-@@ -11954,10 +12749,11 @@ int main(int argc, char *argv[])
+@@ -11954,10 +12828,11 @@ int main(int argc, char *argv[])
  	 * The card settings are only read by drawing, which comes long after. */
  	{
  		char set[CFG_STR];
@@ -1757,7 +2015,7 @@ index 6ae0cad..7487669 100644
  	}
  	a.sys_cursor = 0;
  	db_get_str(db_lib(), "startup_system", startup, sizeof startup, "");
-@@ -12028,6 +12824,8 @@ int main(int argc, char *argv[])
+@@ -12028,6 +12903,8 @@ int main(int argc, char *argv[])
  	 * saved brightness does. Read before ui_init, which is when the scale is
  	 * applied. */
  	if (!ui_init(a.r, P_FONT)) fprintf(stderr, "font init failed\n");
@@ -1766,7 +2024,7 @@ index 6ae0cad..7487669 100644
  	t_mark("font+settings");
  
  	/* The system cards asked for before the display came up, installed so the
-@@ -12044,6 +12842,20 @@ int main(int argc, char *argv[])
+@@ -12044,6 +12921,20 @@ int main(int argc, char *argv[])
  
  	if (shot_path) {
  		if (shot_screen >= 0) a.screen = (screen_id)shot_screen;
@@ -1787,7 +2045,7 @@ index 6ae0cad..7487669 100644
  		if (shot_jump) {
  			sysview *v = &a.view[a.sys_cursor];
  			int k, dir = shot_jump > 0 ? 1 : -1;
-@@ -12230,7 +13042,7 @@ int main(int argc, char *argv[])
+@@ -12230,7 +13121,7 @@ int main(int argc, char *argv[])
  		 * MENU opens in a game. It draws over the shelf and returns here.
  		 * Both handles its own, because there MENU and B mean two different
  		 * menus and the screen cannot say which. */
@@ -1796,7 +2054,7 @@ index 6ae0cad..7487669 100644
  			update_both(&a);
  		} else {
  			if (a.in.pressed[IN_MENU]) { tortos_menu(&a); continue; }
-@@ -12258,6 +13070,18 @@ int main(int argc, char *argv[])
+@@ -12258,6 +13149,18 @@ int main(int argc, char *argv[])
  				render(&a);
  				if (!last_render) t_mark("first frame");
  				last_render = plat_now_ms();
@@ -1815,7 +2073,7 @@ index 6ae0cad..7487669 100644
  			} else {
  				SDL_Delay(IDLE_POLL_MS);
  			}
-@@ -12277,6 +13101,8 @@ done:
+@@ -12277,6 +13180,8 @@ done:
  		free(a.view[i].tex); free(a.view[i].tw); free(a.view[i].th);
  		lib_free(&a.view[i].list);
  	}
@@ -3094,10 +3352,10 @@ index 0000000..16530bf
 +#endif
 diff --git a/src/zune_games.h b/src/zune_games.h
 new file mode 100644
-index 0000000..8d5c185
+index 0000000..6b32579
 --- /dev/null
 +++ b/src/zune_games.h
-@@ -0,0 +1,546 @@
+@@ -0,0 +1,585 @@
 +/* The Zune theme's games: what each game is, the recent list, and its page.
 + *
 + * Included into main.c, with the shelf's input, as zune_music.h is: it is the
@@ -3244,12 +3502,45 @@ index 0000000..8d5c185
 +	return r && r->f[ZGI_SOURCE][0] ? r : NULL;
 +}
 +
-+/* The list's second line: "metacritic 92 · platformer", the score and the
-+ * first genre, whichever there is. Empty for a game nothing is known about. */
++/* A score - "metacritic 92", "gamerankings 88%", "famitsu 30/40", "ign
++ * 9.5/10" - as a school grade, the one scale every critic's number reads
++ * on: A 90 and up, B the 80s, C the 70s, D the 60s, F below; "+" for a last
++ * digit of 7 to 9 and "-" for 0 to 3, so 92 is A- and 88 is B+ (100 is A+,
++ * an F has neither). Empty when there is no number. The app's
++ * gameinfo.grade, the same rule. */
++static void zgi_grade(const char *score, char *out, size_t n)
++{
++	const char *p = score + strlen(score), *num;
++	double v, scale = 0;
++	int pct, d;
++	char letter;
++
++	out[0] = '\0';
++	while (p > score && (p[-1] == ' ')) p--;
++	/* The last number, and what it is out of: "/40", "%", or nothing. */
++	while (p > score && (isdigit((unsigned char)p[-1]) || p[-1] == '.' || p[-1] == '/' || p[-1] == '%'))
++		p--;
++	if (!*p || !isdigit((unsigned char)*p)) return;
++	v = atof(p);
++	if ((num = strchr(p, '/'))) scale = atof(num + 1);
++	if (num && scale <= 0) return;
++	if (num) v = v * 100.0 / scale;
++	else if (!strchr(p, '%') && v <= 10) v *= 10;            /* a bare "9.5" is out of 10 */
++	pct = (int)(v + 0.5);
++	if (pct > 100) pct = 100;
++	if (pct >= 100) { snprintf(out, n, "A+"); return; }
++	if (pct < 60) { snprintf(out, n, "F"); return; }
++	letter = "ABCD"[pct >= 90 ? 0 : pct >= 80 ? 1 : pct >= 70 ? 2 : 3];
++	d = pct % 10;
++	snprintf(out, n, "%c%s", letter, d >= 7 ? "+" : d <= 3 ? "-" : "");
++}
++
++/* The list's second line: "A- \xc2\xb7 platformer", the grade and the first
++ * genre, whichever there is. Empty for a game nothing is known about. */
 +static void zgi_sub(const char *folder, const char *file, char *out, size_t n)
 +{
 +	const zgi_row *r = zgi_find(folder, file);
-+	char genre[64] = "";
++	char genre[64] = "", g[8];
 +	const char *comma;
 +
 +	out[0] = '\0';
@@ -3257,9 +3548,9 @@ index 0000000..8d5c185
 +	comma = strchr(r->f[ZGI_GENRE], ',');
 +	snprintf(genre, sizeof genre, "%.*s", comma ? (int)(comma - r->f[ZGI_GENRE]) : 60,
 +	         r->f[ZGI_GENRE]);
-+	snprintf(out, n, "%s%s%s", r->f[ZGI_SCORE], r->f[ZGI_SCORE][0] && genre[0] ? " \xc2\xb7 " : "",
-+	         genre);
-+	zune_lower(out, out, n);
++	zune_lower(genre, genre, sizeof genre);
++	zgi_grade(r->f[ZGI_SCORE], g, sizeof g);
++	snprintf(out, n, "%s%s%s", g, g[0] && genre[0] ? " \xc2\xb7 " : "", genre);
 +}
 +
 +/* ---- when ------------------------------------------------------------------------- */
@@ -3587,12 +3878,18 @@ index 0000000..8d5c185
 +
 +			y += (tl > 1 ? 2 : 1) * (ft ? TTF_FontLineSkip(ft) : 50) + 8;
 +		}
++		/* The grade large, and whose number it is beside it, quiet. */
 +		if (r && r->f[ZGI_SCORE][0]) {
-+			char sc[64];
++			char sc[64], gr[8];
++			int w = 0;
 +
++			zgi_grade(r->f[ZGI_SCORE], gr, sizeof gr);
 +			zune_lower(r->f[ZGI_SCORE], sc, sizeof sc);
-+			zune_text(a->r, fs, sc, x, y, -1, accent);
-+			y += fs ? TTF_FontLineSkip(fs) + 4 : 38;
++			if (gr[0]) w = zune_text(a->r, ft, gr, x, y - 4, -1, accent) + 16;
++			zune_text(a->r, fs, sc, x + w, y + (gr[0] && ft && fs ?
++			          (TTF_FontLineSkip(ft) - TTF_FontLineSkip(fs)) / 2 - 4 : 0), -1,
++			          gr[0] ? ZUNE_GRAY : accent);
++			y += (gr[0] && ft ? TTF_FontLineSkip(ft) : fs ? TTF_FontLineSkip(fs) : 38) + 4;
 +		}
 +		if (line[0][0]) {
 +			zune_text_fit(a->r, fs, line[0], x, y, TORTOS_SCREEN_W - x - 48, ZUNE_SOFT);
@@ -3646,10 +3943,10 @@ index 0000000..8d5c185
 +}
 diff --git a/src/zune_music.h b/src/zune_music.h
 new file mode 100644
-index 0000000..e7a1aea
+index 0000000..9fcec49
 --- /dev/null
 +++ b/src/zune_music.h
-@@ -0,0 +1,1900 @@
+@@ -0,0 +1,2131 @@
 +/* SPDX-License-Identifier: MIT */
 +/* The Zune theme's music: the original Zune's, on Muse.
 + *
@@ -3933,36 +4230,133 @@ index 0000000..e7a1aea
 +	return zx_m && a->n > 0 ? zx_m[zx_r(a->first)].genre : NULL;
 +}
 +
-+/* The genres, once each whatever their case, with each album's and how
-+ * many albums each has: what the genres list and its rows show. */
++/* The Zune's genres were a short list, and tags are not: one card had
++ * "Alternative Rock", "Alt-Rock", "Indie Rock" and "Indie" each with an
++ * album of its own (reported 2026-10-15). So a tag is read as one of these,
++ * by the first of its words that says which - the first genre a tag names
++ * ("Rock; Pop" is rock), the more particular rules first ("pop punk" is
++ * punk before it is pop). What none of them says is "other". */
++static const char *const ZX_BROAD[][2] = {
++	{ "christmas", "holiday" }, { "holiday", "holiday" },
++	{ "soundtrack", "soundtracks" }, { "score", "soundtracks" }, { "musical", "soundtracks" },
++	{ "video game", "soundtracks" }, { "film", "soundtracks" }, { "anime", "soundtracks" },
++	{ "children", "children's" }, { "kids", "children's" },
++	{ "comedy", "comedy" }, { "spoken", "spoken word" }, { "audiobook", "spoken word" },
++	{ "gospel", "christian & gospel" }, { "christian", "christian & gospel" },
++	{ "worship", "christian & gospel" },
++	{ "metal", "metal" }, { "grindcore", "metal" }, { "djent", "metal" },
++	{ "pop punk", "punk" }, { "punk", "punk" }, { "emo", "punk" }, { "hardcore", "punk" },
++	{ "hip hop", "hip-hop/rap" }, { "hip-hop", "hip-hop/rap" }, { "hiphop", "hip-hop/rap" },
++	{ "rap", "hip-hop/rap" }, { "trap", "hip-hop/rap" }, { "drill", "hip-hop/rap" },
++	{ "grime", "hip-hop/rap" },
++	{ "r&b", "r&b/soul" }, { "rnb", "r&b/soul" }, { "rhythm and blues", "r&b/soul" },
++	{ "soul", "r&b/soul" }, { "funk", "r&b/soul" }, { "motown", "r&b/soul" },
++	{ "dance pop", "pop" }, { "dance-pop", "pop" }, { "synthpop", "pop" }, { "synth-pop", "pop" },
++	{ "k-pop", "pop" }, { "j-pop", "pop" },
++	{ "jazz", "jazz" }, { "swing", "jazz" }, { "bebop", "jazz" }, { "big band", "jazz" },
++	{ "bossa", "jazz" },
++	{ "blues", "blues" },
++	{ "classical", "classical" }, { "baroque", "classical" }, { "opera", "classical" },
++	{ "orchestra", "classical" }, { "symphon", "classical" }, { "chamber", "classical" },
++	{ "country", "country" }, { "bluegrass", "country" }, { "americana", "country" },
++	{ "folk", "folk" }, { "singer-songwriter", "folk" }, { "singer/songwriter", "folk" },
++	{ "acoustic", "folk" },
++	{ "reggaeton", "latin" }, { "reggae", "reggae" }, { "ska", "reggae" },
++	{ "dancehall", "reggae" }, { "dub", "reggae" },
++	{ "latin", "latin" }, { "salsa", "latin" }, { "bachata", "latin" }, { "cumbia", "latin" },
++	{ "tango", "latin" }, { "samba", "latin" }, { "mexican", "latin" },
++	{ "new age", "new age" }, { "meditation", "new age" }, { "ambient", "electronic/dance" },
++	{ "easy listening", "easy listening" }, { "lounge", "easy listening" },
++	{ "world", "world" }, { "afro", "world" }, { "celtic", "world" }, { "african", "world" },
++	{ "house", "electronic/dance" }, { "techno", "electronic/dance" },
++	{ "trance", "electronic/dance" }, { "edm", "electronic/dance" },
++	{ "electro", "electronic/dance" }, { "dubstep", "electronic/dance" },
++	{ "drum and bass", "electronic/dance" }, { "drum & bass", "electronic/dance" },
++	{ "dance", "electronic/dance" }, { "disco", "electronic/dance" },
++	{ "downtempo", "electronic/dance" }, { "trip hop", "electronic/dance" },
++	{ "chill", "electronic/dance" }, { "lo-fi", "electronic/dance" },
++	{ "synthwave", "electronic/dance" },
++	{ "alternative", "alternative" }, { "alt-rock", "alternative" }, { "alt rock", "alternative" },
++	{ "indie", "alternative" }, { "shoegaze", "alternative" },
++	{ "post-punk", "alternative" }, { "new wave", "alternative" }, { "darkwave", "alternative" },
++	{ "dark wave", "alternative" }, { "grunge", "alternative" }, { "britpop", "alternative" },
++	{ "rock", "rock" }, { "psychedelic", "rock" }, { "surf", "rock" },
++	{ "pop", "pop" }, { "oldies", "pop" },
++};
++
++static const char *zx_broad(const char *tag)
++{
++	char first[96], low[96];
++	size_t i, k = 0;
++
++	if (!tag || !*tag) return NULL;
++	/* The first genre a tag lists: "Rock; Pop", "Rock / Pop", "Rock, Pop". */
++	while (tag[k] && tag[k] != ';' && tag[k] != ',' && tag[k] != '|' && k + 1 < sizeof first) {
++		if (tag[k] == '/' && tag[k + 1] == ' ') break;
++		first[k] = tag[k];
++		k++;
++	}
++	first[k] = '\0';
++	zune_lower(first, low, sizeof low);
++	for (i = 0; i < sizeof ZX_BROAD / sizeof ZX_BROAD[0]; i++) {
++		const char *w = ZX_BROAD[i][0], *p = strstr(low, w);
++
++		/* A whole word or the start of one: "trap" is not "strap". */
++		if (p && (p == low || !isalnum((unsigned char)p[-1]))) return ZX_BROAD[i][1];
++	}
++	return "other";
++}
++
++/* The genres as the Zune listed them - the broad ones above - with each
++ * album's and how many albums each has: what the genres list and its rows
++ * show. A genre with a single album is folded into "other" with the rest of
++ * what is too thin to browse by. */
 +static void zx_genres(void)
 +{
 +	int al, i, n = 0;
++	const char **bro;
 +
 +	zx_genre = malloc(sizeof *zx_genre * (size_t)(g_muse.nalbums + 1));
 +	zx_genre_n = calloc((size_t)(g_muse.nalbums + 1), sizeof *zx_genre_n);
 +	zx_al_genre = malloc(sizeof *zx_al_genre * (size_t)(g_muse.nalbums + 1));
-+	if (!zx_genre || !zx_genre_n || !zx_al_genre) return;
++	bro = calloc((size_t)(g_muse.nalbums + 1), sizeof *bro);
++	if (!zx_genre || !zx_genre_n || !zx_al_genre || !bro) { free(bro); return; }
 +	for (al = 0; al < g_muse.nalbums; al++) {
-+		const char *g = zx_is_music(al) ? zx_album_genre(al) : NULL;
-+
 +		zx_al_genre[al] = -1;
-+		if (g) zx_genre[n++] = g;
++		bro[al] = zx_is_music(al) ? zx_broad(zx_album_genre(al)) : NULL;
 +	}
++	/* Thin ones into "other": counted first, by the pointer, since the
++	 * broad names are the table's own strings. */
++	for (al = 0; al < g_muse.nalbums; al++) {
++		int c = 0, b;
++
++		if (!bro[al] || !strcmp(bro[al], "other")) continue;
++		for (b = 0; b < g_muse.nalbums && c < 2; b++) if (bro[b] == bro[al]) c++;
++		if (c < 2) bro[al] = "other";
++	}
++	for (al = 0; al < g_muse.nalbums; al++)
++		if (bro[al]) zx_genre[n++] = bro[al];
 +	if (n > 1) qsort(zx_genre, (size_t)n, sizeof *zx_genre, zx_cmp_str);
 +	for (i = 0; i < n; i++)
 +		if (!zx_ngenre || strcasecmp(zx_genre[zx_ngenre - 1], zx_genre[i]))
 +			zx_genre[zx_ngenre++] = zx_genre[i];
-+	for (al = 0; al < g_muse.nalbums; al++) {
-+		const char *g = zx_is_music(al) ? zx_album_genre(al) : NULL;
-+		const char **hit = g ? bsearch(&g, zx_genre, (size_t)zx_ngenre, sizeof *zx_genre,
-+		                               zx_cmp_str) : NULL;
-+
-+		if (hit) {
-+			zx_al_genre[al] = (int)(hit - zx_genre);
-+			zx_genre_n[zx_al_genre[al]]++;
++	/* "other" last, where the Zune would have it. */
++	for (i = 0; i < zx_ngenre - 1; i++)
++		if (!strcmp(zx_genre[i], "other")) {
++			memmove(&zx_genre[i], &zx_genre[i + 1], (size_t)(zx_ngenre - 1 - i) * sizeof *zx_genre);
++			zx_genre[zx_ngenre - 1] = "other";
++			break;
 +		}
++	for (al = 0; al < g_muse.nalbums; al++) {
++		if (!bro[al]) continue;
++		for (i = 0; i < zx_ngenre; i++)
++			if (!strcasecmp(zx_genre[i], bro[al])) {
++				zx_al_genre[al] = i;
++				zx_genre_n[i]++;
++				break;
++			}
 +	}
++	free(bro);
 +}
 +
 +static void zx_build(void)
@@ -4116,7 +4510,12 @@ index 0000000..e7a1aea
 +		zx_note_until = plat_now_ms() + ZX_NOTE_MS;
 +		zx_write_card(ZX_LIKED_FILE, zx_liked_body);
 +	}
-+	if ((was < 0) != (v < 0)) zx_write_card(ZX_DIR "/ratings.tsv", zx_ratings_body);
++	if ((was < 0) != (v < 0)) {
++		zx_write_card(ZX_DIR "/ratings.tsv", zx_ratings_body);
++		/* What a dislike means, said where it was done. */
++		zx_note = v < 0 ? "disliked: off the card at the next sync" : "dislike undone";
++		zx_note_until = plat_now_ms() + ZX_NOTE_MS;
++	}
 +}
 +
 +/* The note Now Playing shows for a moment after a like, and for how much
@@ -4293,6 +4692,91 @@ index 0000000..e7a1aea
 +{
 +	return k == ZL_ALBUMS || k == ZL_PLAYLISTS || k == ZL_BOOKS ||
 +	       k == ZL_ARTIST_ALBUMS || k == ZL_GENRE_ALBUMS;
++}
++
++/* ---- disliked albums and artists ---------------------------------------------------
++ * "Too much music": an album or an artist disliked here is marked for the
++ * Game Zune app, which takes it off the card at its next connection (and a
++ * disliked song with it - ratings.tsv's -1 lines). Kept in remove.tsv, a
++ * line a mark: "album<TAB>Music/<artist>/<album>" or "artist<TAB><name>",
++ * the artist by the name its list shows, so every folder folded into it
++ * ("feat.") goes too. Read once a scan; written whole on each change. */
++#define ZX_REMOVE_FILE ZX_DIR "/remove.tsv"
++#define ZD_MAX 4096
++
++static char    *zd_mark[ZD_MAX];
++static int      zd_n;
++static unsigned zd_gen = ~0u;
++
++static void zd_body(FILE *f)
++{
++	int i;
++
++	fprintf(f, "# Game Zune: what was disliked on the Pixel 2, for the Game Zune app to"
++	           " take off the card. album<TAB>folder or artist<TAB>name.\n");
++	for (i = 0; i < zd_n; i++) fprintf(f, "%s\n", zd_mark[i]);
++}
++
++static void zd_load(void)
++{
++	char *b, *line, *save = NULL;
++	int i;
++
++	if (zd_gen == g_muse_gen) return;
++	zd_gen = g_muse_gen;
++	for (i = 0; i < zd_n; i++) free(zd_mark[i]);
++	zd_n = 0;
++	if (!(b = zx_slurp_card(ZX_REMOVE_FILE))) return;
++	for (line = strtok_r(b, "\n", &save); line && zd_n < ZD_MAX; line = strtok_r(NULL, "\n", &save)) {
++		size_t len = strlen(line);
++
++		while (len && (line[len - 1] == '\r' || line[len - 1] == ' ')) line[--len] = '\0';
++		if (line[0] && line[0] != '#' && strchr(line, '\t') && (zd_mark[zd_n] = strdup(line)))
++			zd_n++;
++	}
++	free(b);
++}
++
++/* The key a row is marked by: an album's folder or an artist's name. */
++static bool zd_key(zl_kind kind, int id, char *out, size_t n)
++{
++	if (kind == ZL_ARTISTS) {
++		snprintf(out, n, "artist\t%s", g_muse.artists[id].name);
++		return true;
++	}
++	if (zl_albumish(kind) && kind != ZL_PLAYLISTS && kind != ZL_BOOKS && id >= 0 &&
++	    id < g_muse.nalbums && g_muse.albums[id].n > 0 && !g_muse.albums[id].playlist &&
++	    !g_muse.albums[id].book) {
++		const char *p = g_muse.tracks[g_muse.albums[id].first].path, *slash = strrchr(p, '/');
++
++		snprintf(out, n, "album\t%.*s", slash ? (int)(slash - p) : 0, p);
++		return slash != NULL;
++	}
++	return false;
++}
++
++static int zd_find(const char *key)
++{
++	int i;
++
++	zd_load();
++	for (i = 0; i < zd_n; i++) if (!strcmp(zd_mark[i], key)) return i;
++	return -1;
++}
++
++static void zd_toggle(const char *key)
++{
++	int i = zd_find(key);
++
++	if (i >= 0) {
++		free(zd_mark[i]);
++		zd_mark[i] = zd_mark[--zd_n];
++	} else if (zd_n < ZD_MAX && (zd_mark[zd_n] = strdup(key))) {
++		zd_n++;
++	}
++	zx_write_card(ZX_REMOVE_FILE, zd_body);
++	zx_note = i >= 0 ? "dislike undone" : "disliked: off the card at the next sync";
++	zx_note_until = plat_now_ms() + ZX_NOTE_MS;
 +}
 +
 +/* For qsort, one comparator a kind: by name, whatever its case, and by
@@ -4528,6 +5012,11 @@ index 0000000..e7a1aea
 +		out->title = ar->name;
 +		snprintf(sub, sizeof sub, "%d album%s", albums, albums == 1 ? "" : "s");
 +		out->sub = sub;
++		{
++			char key[LIB_PATH + 16];
++
++			if (zd_key(ZL_ARTISTS, id, key, sizeof key) && zd_find(key) >= 0) out->rating = -1;
++		}
 +		break;
 +	}
 +	case ZL_GENRES: {
@@ -4588,6 +5077,11 @@ index 0000000..e7a1aea
 +		else
 +			snprintf(sub, sizeof sub, "%s", g_muse.artists[muse_artist_of(id)].name);
 +		out->sub = sub;
++		{
++			char key[LIB_PATH + 16];
++
++			if (zd_key(l->kind, id, key, sizeof key) && zd_find(key) >= 0) out->rating = -1;
++		}
 +		break;
 +	}
 +	}
@@ -4925,16 +5419,37 @@ index 0000000..e7a1aea
 +		          zl_rows(l), l->cf.pos, l->cursor, zrow_get, &c);
 +	if (letter && letter_alpha) zune_letter(r, letter, letter_alpha);
 +	zune_clock(r);
++	/* A note from an option chosen here - a dislike - for a moment. */
++	{
++		unsigned left;
++		const char *nt = zx_note_now(&left);
++
++		if (nt) {
++			TTF_Font *f = zune_font(ZF_SUB);
++			int w = 0, h = f ? TTF_FontLineSkip(f) : 36;
++
++			if (f) TTF_SizeUTF8(f, nt, &w, NULL);
++			SDL_SetRenderDrawBlendMode(r, SDL_BLENDMODE_BLEND);
++			SDL_SetRenderDrawColor(r, 0, 0, 0, 200);
++			SDL_RenderFillRect(r, &(SDL_Rect){ (TORTOS_SCREEN_W - w) / 2 - 20, TORTOS_SCREEN_H - 70 - 8,
++			                   w + 40, h + 16 });
++			zune_text(r, f, nt, TORTOS_SCREEN_W / 2, TORTOS_SCREEN_H - 70, 0,
++			          (SDL_Color){ 0xEC, 0x00, 0x8C, 255 });
++			return true;                  /* drawn again until it goes */
++		}
++	}
 +	return l->cf.active || e < 1 || zc_pending;
 +}
 +
 +/* ---- options: what the center button held did ---------------------------------- */
 +
-+enum { ZA_PLAY, ZA_SHUFFLE, ZA_ADD, ZA_LIKE, ZA_DISLIKE, ZA_COUNT };
++enum { ZA_PLAY, ZA_SHUFFLE, ZA_ADD, ZA_LIKE, ZA_DISLIKE, ZA_REMOVE, ZA_COUNT };
 +
 +/* The options a row has: play, shuffle (not for one song), add to now
-+ * playing, and a song's rating. */
-+static int zt_option_items(bool song, int rating, const char **items, int *acts)
++ * playing, a song's rating, and for an album or an artist the dislike that
++ * takes it off the card at the next sync (`mark`: 0 none, 1 an album,
++ * 2 an artist; negative when already disliked). */
++static int zt_option_items(bool song, int rating, int mark, const char **items, int *acts)
 +{
 +	int n = 0;
 +
@@ -4943,16 +5458,21 @@ index 0000000..e7a1aea
 +	items[n] = "add to now playing"; acts[n++] = ZA_ADD;
 +	if (song) {
 +		items[n] = rating > 0 ? "unlike" : "rate: like"; acts[n++] = ZA_LIKE;
-+		items[n] = rating < 0 ? "remove dislike" : "rate: dislike"; acts[n++] = ZA_DISLIKE;
++		items[n] = rating < 0 ? "undo dislike" : "dislike: remove on sync"; acts[n++] = ZA_DISLIKE;
++	}
++	if (mark) {
++		items[n] = mark < 0 ? "undo dislike"
++		         : mark == 2 ? "dislike artist: remove on sync" : "dislike album: remove on sync";
++		acts[n++] = ZA_REMOVE;
 +	}
 +	return n;
 +}
 +
 +/* The options over the menu: the action chosen, or -1. */
-+static int zt_options(app *a, zt_level *lv, const char *what, bool song, int rating)
++static int zt_options(app *a, zt_level *lv, const char *what, bool song, int rating, int mark)
 +{
 +	const char *items[ZA_COUNT];
-+	int acts[ZA_COUNT], n = zt_option_items(song, rating, items, acts), sel = 0;
++	int acts[ZA_COUNT], n = zt_option_items(song, rating, mark, items, acts), sel = 0;
 +	unsigned last = 0;
 +	bool dirty = true;
 +
@@ -5111,13 +5631,17 @@ index 0000000..e7a1aea
 +		 * screen is where it is played from. */
 +		if (a->in.pressed[IN_X] && rows > 0 && l->kind != ZL_BOOKS) {
 +			bool song = (l->kind == ZL_SONGS || l->kind == ZL_TRACKS) && zl_id(l, l->cursor) >= 0;
-+			int t = song ? zl_id(l, l->cursor) : -1, act;
++			int t = song ? zl_id(l, l->cursor) : -1, act, mark = 0;
++			char key[LIB_PATH + 16];
 +			zune_row zr;
 +			zrow_ctx c = { a, l };
 +
 +			memset(&zr, 0, sizeof zr);
 +			zrow_get(&c, l->cursor, &zr);
-+			act = zt_options(a, lv, zr.title, song, song ? zx_rate[zx_r(t)] : 0);
++			if (!song && zl_id(l, l->cursor) >= 0 &&
++			    zd_key(l->kind, zl_id(l, l->cursor), key, sizeof key))
++				mark = (l->kind == ZL_ARTISTS ? 2 : 1) * (zd_find(key) >= 0 ? -1 : 1);
++			act = zt_options(a, lv, zr.title, song, song ? zx_rate[zx_r(t)] : 0, mark);
 +			if (!a->running || g_muse_gone) break;
 +			switch (act) {
 +			case ZA_PLAY: case ZA_SHUFFLE: case ZA_ADD:
@@ -5131,6 +5655,7 @@ index 0000000..e7a1aea
 +				break;
 +			case ZA_LIKE:    zx_rate_set(t, zx_rate[zx_r(t)] > 0 ? 0 : 1); break;
 +			case ZA_DISLIKE: zx_rate_set(t, zx_rate[zx_r(t)] < 0 ? 0 : -1); break;
++			case ZA_REMOVE:  zd_toggle(key); break;
 +			default: break;
 +			}
 +			plat_input_flush();
@@ -5293,6 +5818,9 @@ index 0000000..e7a1aea
 +		if (a->in.pressed[IN_BACK]) break;
 +		if (in_repeat(&a->in, IN_UP))   sel = (sel + n - 1) % n;
 +		if (in_repeat(&a->in, IN_DOWN)) sel = (sel + 1) % n;
++		/* L1 and R1 skip the song on a menu, as on Now Playing. */
++		if (zx_loaded() && in_repeat(&a->in, IN_L1)) musec_prev();
++		if (zx_loaded() && in_repeat(&a->in, IN_R1)) musec_next();
 +		if (a->in.pressed[IN_SELECT] || a->in.pressed[IN_ACCEPT]) {
 +			int w = a->in.pressed[IN_SELECT] ? ZL_ARTISTS : what[sel];
 +
@@ -5540,7 +6068,7 @@ index 0000000..e7a1aea
 +		if (cover_answers()) zc_forget_none();
 +	if (over && !strcmp(over, "+options")) {
 +		const char *items[ZA_COUNT];
-+		int acts[ZA_COUNT], n = zt_option_items(false, 0, items, acts);
++		int acts[ZA_COUNT], n = zt_option_items(false, 0, 1, items, acts);
 +		zune_row zr;
 +		zrow_ctx c = { a, l };
 +
@@ -5593,7 +6121,7 @@ index 8326c0b..9d517bd 100644
  			int n = ctl_rows((ctl_page)p, (ctl_dir)d, rows), i;
  			int rules = 0, notes = 0;
 diff --git a/tools/menu-check.c b/tools/menu-check.c
-index 5917c7a..06ed9c5 100644
+index 5917c7a..7b5c997 100644
 --- a/tools/menu-check.c
 +++ b/tools/menu-check.c
 @@ -658,8 +658,10 @@ static void radio_less(void)
@@ -5608,21 +6136,36 @@ index 5917c7a..06ed9c5 100644
  	   "and the list names the rows the build drew, first to last");
  
  	/* The GKD Pixel 2: no radio, and its files go over the USB cable. */
-@@ -888,11 +890,12 @@ static void ingame_rows(void)
+@@ -888,11 +890,13 @@ static void ingame_rows(void)
  	menu_row rows[GM_ROWS];
  	int got[GM_ROWS], n, k;
  
 -	u.dmode = "Native"; u.earned = 12; u.total = 40;
-+	u.dmode = "Native"; u.sound = "game"; u.earned = 12; u.total = 40;
++	u.dmode = "Native"; u.sound = "game"; u.song = ""; u.earned = 12; u.total = 40;
  	n = gm_rows(&u, rows, &b);
  
  	printf("in-game menu, a game with a set:\n");
 -	ck(n == GM_ROWS, "seven rows");
-+	ck(n == GM_ROWS, "eight rows");
++	ck(n == GM_ROWS, "nine rows");
++	ck(!strcmp(val(&rows[GM_SONG]), "shuffle all"), "Song offers shuffle all with nothing loaded");
 +	ck(!strcmp(val(&rows[GM_SOUND]), "game"), "Sound says what is heard");
  	ck(!strcmp(rows[GM_CONTINUE].label, "Continue"), "Continue leads");
  	ck(!strcmp(val(&rows[GM_DISPLAY]), "Native"), "Display carries the mode");
  	ck(!strcmp(val(&rows[GM_CHEEVOS]), "12 / 40"), "Cheevos counts the set");
+@@ -900,6 +904,13 @@ static void ingame_rows(void)
+ 	k = reachable(rows, n, got, GM_ROWS);
+ 	ck(k == GM_ROWS, "every row is a stop");
+ 
++	u.song = "A Very Long Song Title That Goes On And On";
++	n = gm_rows(&u, rows, &b);
++	ck(!strcmp(val(&rows[GM_SONG]), "< A Very Long Song Titl... >"), "a long song is cut to fit");
++	u.song = "Digital Love";
++	n = gm_rows(&u, rows, &b);
++	ck(!strcmp(val(&rows[GM_SONG]), "< Digital Love >"), "the song, with what left and right do");
++
+ 	u.earned = 0; u.total = 0;
+ 	n = gm_rows(&u, rows, &b);
+ 	printf("in-game menu, a game with no set:\n");
 diff --git a/tools/muselib-check.c b/tools/muselib-check.c
 index 5114799..3164366 100644
 --- a/tools/muselib-check.c

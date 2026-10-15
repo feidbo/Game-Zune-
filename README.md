@@ -79,8 +79,9 @@ the time (see [Sources](#sources)):
   nothing gets bumped in a pocket. The music keeps playing and headset buttons still work.
   **MENU** wakes it; if MENU was only bumped and nothing else is pressed, it locks itself again
   after 10 seconds. If the music stops, Auto Off still turns the Pixel 2 off to save the battery.
-  The screen is fully off while locked: the backlight is switched off *and* set to zero, and
-  your brightness comes back when you wake it.
+  The screen is fully off while locked: the backlight is switched off and set to zero, and the
+  panel itself is powered down; your brightness comes back when you wake it. Each step is written
+  to the device log (**device → show device log** in the Windows app) if it ever stays lit.
 - **Screen Off (sleep):** the first row of **settings** turns the screen off at any time, with
   or without music - the same as the pocket lock (only MENU wakes it, the music keeps playing,
   it goes dark again 10 seconds after a wake unless you press something). With nothing playing,
@@ -88,16 +89,31 @@ the time (see [Sources](#sources)):
 - **Featured artists count as the artist:** a song by "The Beatles feat. Johnny" is listed under
   **The Beatles**, with their other albums - only "feat.", "ft." and "featuring" are split off, so
   "Simon & Garfunkel" stays one act. The Windows app also files new songs that way.
+- **Zune power-off:** turning off shows "zune" fading out, not TortOS's tortoise.
 - **A Zune boot animation:** at power-on a bloom of the Zune's colors gathers into the white
   "zune" wordmark (`TortOS/zune-splash.bin`, made by `scripts/make_zune_splash.py`). The Zune
-  launcher puts it in place of TortOS's own animation a few seconds after it first starts - so you
-  see it from the *next* power-on - and keeps TortOS's beside it (and as `TortOS/splash.stock.bin`
+  launcher puts it in place of TortOS's own animation a few seconds after it first starts, and
+  again as it powers off - so you see it from the *next* power-on - and keeps TortOS's beside it (and as `TortOS/splash.stock.bin`
   on the card). Switching the UI Theme away from Zune puts TortOS's animation back.
 
   ![zune boot animation](docs/screenshots/zune-splash.gif)
 - **Battery:** every Zune screen (the top menu, the zune and game boy menus, lists, Now Playing,
   settings) shows the battery beside the clock, top right. It empties as it runs down, turns
   **red at 10%** and below, and shows a **lightning bolt** while charging.
+- **Changing songs while you play:** in a game, **MENU** opens the in-game menu, whose **Song** row
+  shows what's playing - **Left / Right** skip back and forward, **A** pauses or plays (or, with
+  nothing loaded, shuffles everything). On the menus outside a game, **L1 / R1** skip songs too.
+- **Dislike to remove:** **X** on a song, an album or an artist, then **dislike**. It gets a broken
+  heart and "off the card at the next sync"; the next time the Windows app opens the card it
+  offers to delete everything disliked (an artist's "feat." folders included) and takes it off
+  your playlists. Undo by choosing the same option again.
+- **Genres the Zune way:** your tags ("Alternative Rock", "Indie", "Alt-Rock", ...) are read as
+  about twenty broad genres - alternative, rock, pop, hip-hop/rap, r&b/soul, electronic/dance,
+  jazz, classical, country, folk, metal, punk, latin, reggae, soundtracks, holiday and so on - and
+  a genre with only one album goes under **other**.
+- **Grades for games:** critics' scores are shown as a school grade - **A** 90+, **B** 80s, **C**
+  70s, **D** 60s, **F** below 60, with **+** for a last digit of 7-9 and **-** for 0-3 (92 is A-,
+  88 is B+). The game page shows the grade large and the score it came from beside it.
 - **Only what you have:** the zune menu shows playlists only when there are some, genres only
   once `update` has given the songs genres, and audiobooks only when there are any.
 - **Music while you play:** in a game, **MENU → Sound** switches between the game's own sound
@@ -129,7 +145,7 @@ play/pause button and **B** its back button.
 |---|---|---|---|---|
 | Up / Down | Move | Move | Move (hold: fast, with the letter) | Volume |
 | Left / Right | — | **Twist**: next system | **Twist**: artists, albums… / next album | Skip (hold: scan) |
-| L1 / R1 | — | Jump by letter | Jump by letter | Previous / next song |
+| L1 / R1 | **Previous / next song** (while music is loaded) | Jump by letter | Jump by letter | Previous / next song |
 | A | Open | **Game page** (A again plays) | Open or play | **Options**: rate, song list, shuffle, repeat |
 | B | Back | Back | Back | Back |
 | X | — | Game details | **Options** | Options |
