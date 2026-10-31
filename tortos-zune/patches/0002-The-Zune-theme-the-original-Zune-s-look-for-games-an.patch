@@ -1,4 +1,4 @@
-From 3c11bb7dc77f368a7257570d1b91c509d1e7f435 Mon Sep 17 00:00:00 2001
+From 99da24cb014985f38979b272d16e2a13852aad6d Mon Sep 17 00:00:00 2001
 From: Claude <noreply@anthropic.com>
 Date: Tue, 13 Oct 2026 20:31:25 +0000
 Subject: [PATCH 2/2] The Zune theme: the original Zune's look, for games and
@@ -89,15 +89,19 @@ shelves and Now Playing; ui.c switches the menus' face; controls.c has
 the theme's Controls pages.
 ---
  src/cards.h            |   13 +-
- src/controls.c         |   48 +-
+ src/controls.c         |   55 +-
  src/controls.h         |    5 +-
- src/device/brick.c     |   10 +-
- src/device/pixel2.c    |  111 ++-
+ src/device.h           |   14 +-
+ src/device/brick.c     |   40 +-
+ src/device/pixel2.c    |  167 +++-
  src/game_menu.c        |   16 +-
  src/game_menu.h        |    7 +-
- src/main.c             | 1055 ++++++++++++++++++--
- src/muselib.c          |  104 +-
- src/muselib.h          |    6 +
+ src/main.c             | 1248 +++++++++++++++++++++--
+ src/muselib.c          |  361 ++++++-
+ src/muselib.h          |   23 +
+ src/platform.c         |   79 +-
+ src/platform.h         |   20 +
+ src/resident.c         |   27 +-
  src/sys_menu.c         |    1 +
  src/sys_menu.h         |    7 +-
  src/ui.c               |   52 +
@@ -108,8 +112,8 @@ the theme's Controls pages.
  src/zune_music.h       | 2131 ++++++++++++++++++++++++++++++++++++++++
  tools/controls-check.c |   10 +-
  tools/menu-check.c     |   17 +-
- tools/muselib-check.c  |   53 +
- 21 files changed, 5090 insertions(+), 108 deletions(-)
+ tools/muselib-check.c  |  113 +++
+ 25 files changed, 5822 insertions(+), 136 deletions(-)
  create mode 100644 src/zune.c
  create mode 100644 src/zune.h
  create mode 100644 src/zune_games.h
@@ -144,7 +148,7 @@ index e1b61bd..ecf01b8 100644
  
  /* The set a stored name selects, by index. An unknown name is the default
 diff --git a/src/controls.c b/src/controls.c
-index 336c022..e4d1726 100644
+index 336c022..4a86a5f 100644
 --- a/src/controls.c
 +++ b/src/controls.c
 @@ -47,6 +47,13 @@ static int moving(ctl_dir dir, menu_row *out)
@@ -192,7 +196,18 @@ index 336c022..e4d1726 100644
  	/* Here rather than on Anywhere, which is full: it works outside a game,
  	 * and in one L2 and R2 are the game's */
  	if (battery_lights)
-@@ -130,6 +149,25 @@ static int muse(menu_row *out)
+@@ -92,7 +111,9 @@ static int game(menu_row *out)
+ 	 * GBC, which have no shoulders (found 2026-09-30, choosing a fast-forward
+ 	 * button). One row for both, since the page is full. */
+ 	out[n++] = (menu_row){ "X/Y/L2/R2", "Turbo A/B/L1/R1 *", false };
+-	out[n++] = (menu_row){ "POWER",  "Save and turn off",  false };
++	/* A tap pauses the game and sleeps; held, as it always was, the game is
++	 * saved and the device goes off. */
++	out[n++] = (menu_row){ "POWER",  "Sleep; hold 4s: off", false };
+ 	/* The exceptions as a note rather than a longer row: X and Y are the pad's
+ 	 * own buttons on Genesis and SNES, and L2 and R2 only do anything on GBA.
+ 	 * Kept short - a note runs the width of the panel and is cut at about
+@@ -130,6 +151,26 @@ static int muse(menu_row *out)
  	return n;
  }
  
@@ -206,19 +221,29 @@ index 336c022..e4d1726 100644
 +
 +	/* The original Zune's: the pad twists and skips, the center button
 +	 * opens and - on Now Playing - holds the options, play/pause is its own
-+	 * button, held for the pocket lock, which only MENU wakes. */
++	 * button, held for the pocket lock: the sleep a tap of power is, which
++	 * only another tap wakes. */
 +	out[n++] = (menu_row){ "Left/Right", "Twist; skip or scan", false };
 +	out[n++] = (menu_row){ "X",          "Options",         false };
 +	out[n++] = (menu_row){ "START",      "Play/pause; held: lock", false };
 +	out[n++] = (menu_row){ "Y",          "Like: to liked songs", false };
-+	out[n++] = (menu_row){ "MENU",       "Wake, when locked", false };
++	out[n++] = (menu_row){ "POWER",      "Sleep, and wake", false };
 +	return n;
 +}
 +
  static int anywhere(menu_row *out)
  {
  	int n = 0;
-@@ -152,7 +190,7 @@ int ctl_rows(ctl_page p, ctl_dir dir, menu_row *out)
+@@ -141,7 +182,7 @@ static int anywhere(menu_row *out)
+ 	out[n++] = (menu_row){ "MENU",          "Settings",   false };
+ 	out[n++] = (menu_row){ "Volume rocker", "Sound",      false };
+ 	out[n++] = (menu_row){ fn_volume ? "FN+Vol" : "F1/F2", "Brightness", false };
+-	out[n++] = (menu_row){ "POWER",         "Turn off",   false };
++	out[n++] = (menu_row){ "POWER",         "Sleep; hold 4s: off", false };
+ 	return n;
+ }
+ 
+@@ -152,7 +193,7 @@ int ctl_rows(ctl_page p, ctl_dir dir, menu_row *out)
  	switch (p) {
  	case CTL_SHELF:    n = shelf(dir, out);  break;
  	case CTL_GAME:     n = game(out);        break;
@@ -243,11 +268,65 @@ index 26525a1..79a6063 100644
  
  /* Room for the longest page and its footer, with a little spare. */
  #define CTL_MAX_ROWS 10
+diff --git a/src/device.h b/src/device.h
+index 708f876..3d77712 100644
+--- a/src/device.h
++++ b/src/device.h
+@@ -14,9 +14,9 @@
+  * the card - plus the two functions below. Kept this short on purpose: each
+  * line here is something a second device has to answer. */
+ 
+-/* Drain the power key's queue and say whether a press was in it. Called while
+- * a child or a game owns the screen, so it must not block. */
+-bool device_power_pressed(void);
++/* Drain the power key's queue, handing each edge (down, then up) to `edge`.
++ * Called while a child or a game owns the screen, so it must not block. */
++void device_power_drain(void (*edge)(bool down));
+ 
+ /* A game just handed input back. Forget whatever was remembered about the
+  * hardware while something else was driving: the headphone jack, a mute
+@@ -33,6 +33,14 @@ void device_display_take(void);
+ 
+ /* Shared by the portable half, for the device file. */
+ void plat_set_btn(in_state *st, in_button b, bool down);   /* a button's edge */
++/* The power key goes through these instead (platform.c says why): its edges,
++ * the poll's end, and a flush forgetting a hold whose release it drained. */
++void plat_power_key(in_state *st, bool down);
++void plat_power_tick(in_state *st);
++void plat_power_forget(void);
++/* While nothing polls input: the key's queue read for a tap or a hold. */
++enum { PW_NONE, PW_TAP, PW_HOLD };
++int  plat_power_watch(void);
+ bool plat_terminating(void);                    /* SIGTERM arrived */
+ void plat_set_power_pressed(bool on);           /* the last game ended on power */
+ /* One line to a running game, on the connection already open; connects for
 diff --git a/src/device/brick.c b/src/device/brick.c
-index 752b2e1..b7695f5 100644
+index 752b2e1..f787379 100644
 --- a/src/device/brick.c
 +++ b/src/device/brick.c
-@@ -249,6 +249,14 @@ static in_button map_key(SDL_Keycode k)
+@@ -175,6 +175,7 @@ void plat_input_flush(void)
+ 			       read(fds[i], &ev, sizeof ev) == (ssize_t)sizeof ev) { }
+ 	}
+ #endif
++	plat_power_forget();
+ }
+ 
+ /* The input noise a Brick's boot produces - replayed wake presses, the bursts
+@@ -223,8 +224,11 @@ static void poll_raw_fd(int fd, in_state *st)
+ 		if (dbg_input)
+ 			fprintf(stderr, "[in] raw fd=%d code=%d val=%d\n", fd, ev.code, ev.value);
+ 		in_button b = IN_NONE;
+-		if (ev.code == KEY_POWER) b = IN_POWER;
+-		else if (ev.code == KEY_VOLUMEUP) b = IN_VOLUP;
++		if (ev.code == KEY_POWER) {
++			if (ev.value != 2) plat_power_key(st, ev.value == 1);
++			continue;
++		}
++		if (ev.code == KEY_VOLUMEUP) b = IN_VOLUP;
+ 		else if (ev.code == KEY_VOLUMEDOWN) b = IN_VOLDN;
+ 		else if (ev.code == CODE_FN_RIGHT) b = IN_BRIGHTUP;
+ 		else if (ev.code == CODE_FN_LEFT) b = IN_BRIGHTDN;
+@@ -249,6 +253,14 @@ static in_button map_key(SDL_Keycode k)
  	case SDLK_BACKSPACE: return IN_BACK;
  	case SDLK_MINUS: return IN_VOLDN;
  	case SDLK_EQUALS: return IN_VOLUP;
@@ -262,7 +341,58 @@ index 752b2e1..b7695f5 100644
  	default: return IN_NONE;
  	}
  }
-@@ -1017,7 +1025,7 @@ bool plat_battery(int *pct, bool *charging)
+@@ -256,6 +268,7 @@ static in_button map_key(SDL_Keycode k)
+ void plat_input_poll(in_state *st)
+ {
+ 	memset(st->pressed, 0, sizeof st->pressed);
++	st->power_tap = false;
+ 	if (plat_terminating()) st->quit_requested = true;
+ 	/* The jack, checked here because this is the one thing every screen does
+ 	 * once a frame - and, more to the point, the one thing the launcher stops
+@@ -294,6 +307,11 @@ void plat_input_poll(in_state *st)
+ 		case SDL_KEYDOWN:
+ 		case SDL_KEYUP:
+ 			if (e.key.repeat) break;
++			/* P for power, so a desk can tap it and hold it. */
++			if (e.key.keysym.sym == SDLK_p) {
++				plat_power_key(st, e.type == SDL_KEYDOWN);
++				break;
++			}
+ 			plat_set_btn(st, map_key(e.key.keysym.sym), e.type == SDL_KEYDOWN);
+ 			if (e.type == SDL_KEYDOWN && e.key.keysym.sym == SDLK_q)
+ 				st->quit_requested = true;
+@@ -303,6 +321,7 @@ void plat_input_poll(in_state *st)
+ 	poll_raw_fd(fd_power, st);
+ 	poll_raw_fd(fd_keys, st);
+ 	poll_raw_fd(fd_joy, st);
++	plat_power_tick(st);
+ }
+ 
+ /* The launcher and Diatom take turns on one framebuffer here, so there is
+@@ -313,17 +332,17 @@ void device_display_take(void) { }
+ /* The power key's queue, drained: true if a press was in it. The launcher
+  * watches power this way while a child or a game owns the screen, which is
+  * the one control that always has to work. */
+-bool device_power_pressed(void)
++void device_power_drain(void (*edge)(bool down))
+ {
+-	bool pressed = false;
+ #ifdef __linux__
+ 	struct input_event ev;
+ 
+ 	while (fd_power >= 0 && read(fd_power, &ev, sizeof ev) == (ssize_t)sizeof ev)
+-		if (ev.type == EV_KEY && ev.code == KEY_POWER && ev.value == 1)
+-			pressed = true;
++		if (ev.type == EV_KEY && ev.code == KEY_POWER && ev.value != 2)
++			edge(ev.value == 1);
++#else
++	(void)edge;
+ #endif
+-	return pressed;
+ }
+ 
+ #ifdef __linux__
+@@ -1017,7 +1036,7 @@ bool plat_battery(int *pct, bool *charging)
  	const char *fake = getenv("TORTOS_FAKE_BATT");
  	if (fake && *fake) {
  		if (pct) *pct = atoi(fake);
@@ -271,8 +401,17 @@ index 752b2e1..b7695f5 100644
  		return true;
  	}
  #ifdef __linux__
+@@ -1046,3 +1065,8 @@ bool plat_battery(int *pct, bool *charging)
+ 	return false;
+ #endif
+ }
++
++/* The Brick keeps its own governor through a sleep. */
++void plat_cpu_saver(bool on) { (void)on; }
++/* The Brick's own firmware owns its power-off. */
++void plat_poweroff_backstop(void) { }
 diff --git a/src/device/pixel2.c b/src/device/pixel2.c
-index 19b6554..79e2538 100644
+index 19b6554..4b15db4 100644
 --- a/src/device/pixel2.c
 +++ b/src/device/pixel2.c
 @@ -20,6 +20,8 @@
@@ -284,7 +423,54 @@ index 19b6554..79e2538 100644
  #include <fcntl.h>
  #include <linux/input.h>
  #include <signal.h>
-@@ -627,13 +629,20 @@ static int clampi(int v, int lo, int hi)
+@@ -331,6 +333,7 @@ void plat_input_flush(void)
+ 	drain(fd_pad);
+ 	drain(fd_keys);
+ 	drain(fd_power);
++	plat_power_forget();
+ 	l2_down = r2_down = false;
+ }
+ 
+@@ -434,7 +437,7 @@ static void key_event(in_state *st, const struct input_event *ev)
+ 		return;
+ 	}
+ 	if (ev->code == KEY_POWER) {
+-		plat_set_btn(st, IN_POWER, ev->value == 1);
++		if (ev->value != 2) plat_power_key(st, ev->value == 1);
+ 		return;
+ 	}
+ 	if (ev->code == BTN_TL2 || ev->code == BTN_TR2) {
+@@ -464,6 +467,7 @@ void plat_input_poll(in_state *st)
+ 	SDL_Event e;
+ 
+ 	memset(st->pressed, 0, sizeof st->pressed);
++	st->power_tap = false;
+ 	if (plat_terminating()) st->quit_requested = true;
+ 	if (menu_release_next) {
+ 		plat_set_btn(st, IN_MENU, false);
+@@ -476,17 +480,16 @@ void plat_input_poll(in_state *st)
+ 	poll_fd(fd_pad, st);
+ 	poll_fd(fd_keys, st);
+ 	poll_fd(fd_power, st);
++	plat_power_tick(st);
+ }
+ 
+-bool device_power_pressed(void)
++void device_power_drain(void (*edge)(bool down))
+ {
+ 	struct input_event ev;
+-	bool pressed = false;
+ 
+ 	while (fd_power >= 0 && read(fd_power, &ev, sizeof ev) == (ssize_t)sizeof ev)
+-		if (ev.type == EV_KEY && ev.code == KEY_POWER && ev.value == 1)
+-			pressed = true;
+-	return pressed;
++		if (ev.type == EV_KEY && ev.code == KEY_POWER && ev.value != 2)
++			edge(ev.value == 1);
+ }
+ 
+ /* No LEDs on this device. */
+@@ -627,13 +630,20 @@ static int clampi(int v, int lo, int hi)
  	return v < lo ? lo : (v > hi ? hi : v);
  }
  
@@ -308,7 +494,7 @@ index 19b6554..79e2538 100644
  }
  
  static int read_int(const char *path)
-@@ -787,11 +796,99 @@ void plat_settings_init(void)
+@@ -787,11 +797,142 @@ void plat_settings_init(void)
  	apply_brightness(cur_bright);
  }
  
@@ -408,10 +594,53 @@ index 19b6554..79e2538 100644
 +		fprintf(stderr, "backlight: off - bl_power %s, level 0 %s, panel %s\n",
 +		        p ? "written" : "REFUSED", l ? "written" : "REFUSED", d ? "off" : "not switched");
 +	}
++}
++
++/* A shell of its own, detached, that waits and then cuts the power without
++ * init's shutdown - only ever reached when that shutdown never began, since
++ * its first step is a SIGTERM to every process, this one included. A cut
++ * leaves the card's partition unclean, and datapart checks it at the next
++ * boot, which is the cost of a stall and much less than a flat battery. Its
++ * stderr is the log, as the launcher's is, so a cut says so there. */
++void plat_poweroff_backstop(void)
++{
++	char *argv[] = { "/bin/sh", "-c",
++		"sleep 30; echo 'power: still on 30 s after power-off; cutting the power' >&2; "
++		"echo 'tortos: power-off stalled; cut' > /dev/kmsg; sync; poweroff -f", NULL };
++
++	if (!plat_spawn_detached(argv, NULL, "/"))
++		fprintf(stderr, "power: no backstop - the shutdown has to finish on its own\n");
++}
++
++/* Every core shares the one policy on the RK3326. Read back and kept, so the
++ * governor the system chose comes back exactly, whatever it is. */
++#define CPU_GOVERNOR "/sys/devices/system/cpu/cpufreq/policy0/scaling_governor"
++
++void plat_cpu_saver(bool on)
++{
++	static char was[32];
++
++	if (on) {
++		FILE *f = fopen(CPU_GOVERNOR, "r");
++
++		if (!f) return;
++		if (!fgets(was, sizeof was, f)) was[0] = 0;
++		fclose(f);
++		was[strcspn(was, "\n")] = 0;
++		if (!was[0] || !strcmp(was, "powersave")) { was[0] = 0; return; }
++		fprintf(stderr, "cpu: %s while asleep (was %s)\n",
++		        write_file_ok(CPU_GOVERNOR, "powersave\n") ? "powersave" : "governor REFUSED", was);
++	} else if (was[0]) {
++		char line[40];
++
++		snprintf(line, sizeof line, "%s\n", was);
++		write_file(CPU_GOVERNOR, line);
++		was[0] = 0;
++	}
  }
  
  /* The windows differ by jack, so the level is re-applied when a plug goes in
-@@ -915,7 +1012,7 @@ bool plat_battery(int *pct, bool *charging)
+@@ -915,7 +1056,7 @@ bool plat_battery(int *pct, bool *charging)
  
  	if (fake && *fake) {
  		if (pct) *pct = atoi(fake);
@@ -490,10 +719,10 @@ index 6190116..4df9f93 100644
  int gm_rows(const gm_ui *u, menu_row *out, gm_bufs *b);
  
 diff --git a/src/main.c b/src/main.c
-index 6ae0cad..574b0ef 100644
+index 6ae0cad..b8e1d58 100644
 --- a/src/main.c
 +++ b/src/main.c
-@@ -51,11 +51,13 @@
+@@ -51,17 +51,20 @@
  #include "game_menu.h"
  #include "ui.h"
  #include "wifi_menu.h"
@@ -507,7 +736,23 @@ index 6ae0cad..574b0ef 100644
  #include <math.h>
  #include <signal.h>
  #include <stdio.h>
-@@ -443,6 +445,64 @@ static SDL_Texture *load_image(SDL_Renderer *r, const char *path, int *w, int *h
+ #include <stdlib.h>
+ #include <string.h>
+ #include <strings.h>
++#include <sys/resource.h>
+ #include <sys/stat.h>
+ #include <sys/statvfs.h>
+ #include <time.h>
+@@ -197,7 +200,7 @@ static void on_sigterm(int sig) { (void)sig; want_quit = 1; plat_terminate(); }
+  * phases are timed and logged rather than guessed at. On the project this
+  * grew out of, the phase everyone assumed was expensive turned out to be 8%
+  * of startup -- which is only knowable by measuring. */
+-static unsigned t_boot0;
++static unsigned t_boot0, t_exit0;
+ static void t_mark(const char *what)
+ {
+ 	fprintf(stderr, "boot: %-14s %5u ms\n", what, plat_now_ms() - t_boot0);
+@@ -443,6 +446,64 @@ static SDL_Texture *load_image(SDL_Renderer *r, const char *path, int *w, int *h
  static int g_cards;
  static int g_dir;
  
@@ -572,7 +817,7 @@ index 6ae0cad..574b0ef 100644
  /* Muse: what the Music folder holds, read at boot and on every rescan, and
   * the green its card is drawn in - the iPod's own, sampled from the photograph
   * (tools/genmusecard.py draws both cards from the same value).
-@@ -482,6 +542,9 @@ static bool g_muse_books;
+@@ -482,6 +543,9 @@ static bool g_muse_books;
   * rebuilt with it, like g_cov. A finished book is marked and not forgotten,
   * and A on it starts it over. Eric's, 2026-09-27. */
  static bool *g_book_done;
@@ -582,7 +827,81 @@ index 6ae0cad..574b0ef 100644
  
  /* The kind the shelf really shows: the one chosen, unless there is none of it
   * and some of the other. */
-@@ -2761,6 +2824,7 @@ static void redraw_now(void)    { g_redraw_at = 0; }
+@@ -2758,9 +2822,81 @@ static Uint32 g_redraw_at = 0;
+ static void redraw_at(Uint32 t) { if (t < g_redraw_at) g_redraw_at = t; }
+ static void redraw_now(void)    { g_redraw_at = 0; }
+ 
++/* ---------- sleep: a tap of power ----------------------------------------- */
++
++/* Asleep: the screen out (the backlight and the panel both, plat_backlight),
++ * the CPU at its slowest, every button ignored but the volume - which works,
++ * so the music playing on can be turned up in a pocket - until power is
++ * tapped again. Held for PLAT_POWER_HOLD_MS, it powers off as from any screen;
++ * and Auto Off still comes once nothing is playing, so a sleep with no music
++ * is not a battery left to drain. True when it ended in powering off, which
++ * the caller does.
++ *
++ * Polled at 20 a second rather than a frame's 30 ms: nothing is drawn, and a
++ * tap is held for longer than one wait. */
++static bool g_asleep;
++
++static bool sleep_until_tap(app *a, in_state *in)
++{
++	bool off = false, held;
++	int b;
++
++	fprintf(stderr, "sleep: screen off\n");
++	g_asleep = true;
++	plat_backlight(false);
++	plat_cpu_saver(true);
++	plat_input_flush();
++	memset(in, 0, sizeof *in);
++	while (!want_quit && a->running) {
++		muse_screen_poll();
++		plat_input_poll(in);
++		if (in->quit_requested) break;
++		if (in->power_tap) break;
++		if (in->pressed[IN_POWER]) { off = true; break; }
++		if (in_repeat(in, IN_VOLUP)) plat_volume_nudge(+1);
++		if (in_repeat(in, IN_VOLDN)) plat_volume_nudge(-1);
++		/* Auto Off on the volume keys alone: the rest are not being used. */
++		a->idle.seconds = a->auto_off;
++		held = false;
++		for (b = IN_VOLUP; b <= IN_VOLDN; b++)
++			if (in->pressed[b] || in->down[b]) held = true;
++		if (idle_check(&a->idle, plat_now_ms(), held, on_charger() || musec_playing())) {
++			fprintf(stderr, "sleep: Auto Off, nothing playing\n");
++			off = true;
++			break;
++		}
++		SDL_Delay(50);
++	}
++	plat_cpu_saver(false);
++	plat_backlight(true);
++	g_asleep = false;
++	fprintf(stderr, "sleep: %s\n", off ? "powering off" : "awake");
++	plat_input_flush();
++	memset(in, 0, sizeof *in);
++	redraw_now();
++	return off;
++}
++
++/* What a tap does on every screen the launcher draws, from inside its poll:
++ * the screen is where it was on waking, and finds IN_POWER pressed if the
++ * sleep ended in powering off - which every screen already answers. */
++static app *g_sleep_app;
++
++static void power_tap(in_state *st)
++{
++	if (!g_sleep_app) return;
++	/* Asleep already: the tap is the wake, for the sleep's own loop. */
++	if (g_asleep) { st->power_tap = true; return; }
++	if (sleep_until_tap(g_sleep_app, st)) {
++		st->pressed[IN_POWER] = true;
++		st->down_since[IN_POWER] = SDL_GetTicks();
++	}
++}
++
  static void draw_background(app *a)
  {
  	SDL_Renderer *r = a->r;
@@ -590,7 +909,7 @@ index 6ae0cad..574b0ef 100644
  	SDL_SetRenderDrawColor(r, UI_BG_R, UI_BG_G, UI_BG_B, 255);
  	SDL_RenderClear(r);
  	/* A wash of the focused system's color along the bottom edge, so the
-@@ -2793,12 +2857,12 @@ static void shelf_pacing(coverflow *cf)
+@@ -2793,12 +2929,12 @@ static void shelf_pacing(coverflow *cf)
  	 * slower smoothed chase is what a turning solid needs. The two share the
  	 * `.vertical` flag because they share an INPUT axis, which is a different
  	 * question from how they are drawn. */
@@ -605,7 +924,7 @@ index 6ae0cad..574b0ef 100644
  		/* THE DURATION IS FIXED BUT THE DISTANCE IS NOT. ANIM_MS is 240ms
  		 * whatever the travel, and Vertical shows one card at a time, so a
  		 * step moves 878px where the horizontal row moves 400. At the shared
-@@ -3044,10 +3108,474 @@ furniture:
+@@ -3044,10 +3180,474 @@ furniture:
  	}
  }
  
@@ -1081,7 +1400,7 @@ index 6ae0cad..574b0ef 100644
  
  	SDL_Rect focus;
  	const system_cfg *s = &a->sys.systems[a->sys_cursor];
-@@ -3058,7 +3586,7 @@ static void draw_systems(app *a)
+@@ -3058,7 +3658,7 @@ static void draw_systems(app *a)
  	 * a game into paging through a catalog. */
  	/* Vertical stacks the same row down the screen. Cubic is excluded: it
  	 * does not draw this row at all. */
@@ -1090,7 +1409,7 @@ index 6ae0cad..574b0ef 100644
  	                           ? &CF_LAYOUT_SYSTEMS_V : &CF_LAYOUT_SYSTEMS);
  
  	cf_focus_rect(&lay, TORTOS_SCREEN_W, TORTOS_SCREEN_H, &focus);
-@@ -3083,7 +3611,7 @@ static void draw_systems(app *a)
+@@ -3083,7 +3683,7 @@ static void draw_systems(app *a)
  	const system_cfg *label = s;
  	float label_a = 1.0f;
  
@@ -1099,7 +1418,7 @@ index 6ae0cad..574b0ef 100644
  		int li = 0;
  
  		label_a = cf_label(&a->cf_sys, a->sys.count, &li);
-@@ -3132,7 +3660,7 @@ static void draw_systems(app *a)
+@@ -3132,7 +3732,7 @@ static void draw_systems(app *a)
  	}
  	ui_text(a->r, ui_font(UI_F_META), line, TORTOS_SCREEN_W / 2, 690, 0,
  	        ui_fade(UI_TEXT_DIM, label_a));
@@ -1108,7 +1427,7 @@ index 6ae0cad..574b0ef 100644
  		(a->r, TORTOS_SCREEN_W, TORTOS_SCREEN_H, a->cf_sys.pos, a->sys.count,
  		 s->accent, rail_sys_hue, a);
  }
-@@ -3367,9 +3895,9 @@ static void draw_game_text(app *a, sysview *v, const system_cfg *s, int idx)
+@@ -3367,9 +3967,9 @@ static void draw_game_text(app *a, sysview *v, const system_cfg *s, int idx)
  		 * Cubic draws the same string in the same place, from its own caller,
  		 * after the cube; baked into a face it would turn away mid-move and two
  		 * would show at once, one per face, disagreeing by one. */
@@ -1120,7 +1439,7 @@ index 6ae0cad..574b0ef 100644
  				ui_text(a->r, ui_font(UI_F_META), count, 24, 700,
  				        -1, UI_TEXT_DIM);
  			else
-@@ -3418,7 +3946,8 @@ static void draw_games(app *a)
+@@ -3418,7 +4018,8 @@ static void draw_games(app *a)
  {
  	shelf_pacing(&a->view[a->sys_cursor].cf);
  	shelf_pacing(&a->cf_sys);
@@ -1130,7 +1449,7 @@ index 6ae0cad..574b0ef 100644
  
  	sysview *v = &a->view[a->sys_cursor];
  	const system_cfg *s = &a->sys.systems[a->sys_cursor];
-@@ -3430,7 +3959,7 @@ static void draw_games(app *a)
+@@ -3430,7 +4031,7 @@ static void draw_games(app *a)
  	ui_glow(a->r, &focus, s->accent, 100, 2.3f);
  	if (cf_draw(&v->cf, a->r, TORTOS_SCREEN_W, TORTOS_SCREEN_H, v->list.count,
  	            game_get_tex, a,
@@ -1139,7 +1458,7 @@ index 6ae0cad..574b0ef 100644
  	            : albums ? &CF_LAYOUT_ALBUMS_V : &CF_LAYOUT_GAMES_V))
  		redraw_now();
  	/* Warm where the move is about to cut to, one card per frame, underneath
-@@ -3444,7 +3973,7 @@ static void draw_games(app *a)
+@@ -3444,7 +4045,7 @@ static void draw_games(app *a)
  	if (!cf_cutting(&v->cf)) evict_far(v, TEX_KEEP_NEAR);
  
  	draw_game_text(a, v, s, v->cursor);
@@ -1148,7 +1467,7 @@ index 6ae0cad..574b0ef 100644
  		(a->r, TORTOS_SCREEN_W, TORTOS_SCREEN_H, v->cf.pos, v->list.count,
  		 s->accent, NULL, NULL);
  }
-@@ -3498,7 +4027,8 @@ static void draw_shelf(app *a)
+@@ -3498,7 +4099,8 @@ static void draw_shelf(app *a)
  	if (a->sys.count <= 0) draw_no_games(a);
  	else if (a->screen == SCREEN_SYSTEMS) draw_systems(a);
  	else draw_games(a);
@@ -1158,7 +1477,7 @@ index 6ae0cad..574b0ef 100644
  }
  
  static void render(app *a)
-@@ -3613,6 +4143,39 @@ static void anim_launch(app *a, unsigned ms)
+@@ -3613,6 +4215,39 @@ static void anim_launch(app *a, unsigned ms)
   * closed shell is its last frame. power_off turns the backlight off right
   * after, rather than leaving the shell lit until the kernel cuts the panel
   * (which is how it was until 2026-10-02). */
@@ -1198,7 +1517,7 @@ index 6ae0cad..574b0ef 100644
  static void anim_poweroff(app *a)
  {
  	const unsigned T_IN = 430, T_HEAD = 260, T_DIM = 210;
-@@ -3621,6 +4184,7 @@ static void anim_poweroff(app *a)
+@@ -3621,6 +4256,7 @@ static void anim_poweroff(app *a)
  	const float rad = 46.0f;
  	unsigned t0 = plat_now_ms(), now;
  
@@ -1206,9 +1525,16 @@ index 6ae0cad..574b0ef 100644
  	while ((now = plat_now_ms()) - t0 < ms) {
  		unsigned t = now - t0;
  		float x = cx, head = 1.0f, dim = 0.0f;
-@@ -3662,6 +4226,11 @@ static void power_off(app *a)
+@@ -3657,11 +4293,18 @@ static void power_off(app *a)
+ 	/* Here rather than only on the return path: launch.sh runs its leds_off
+ 	 * before each restart of the launcher, and a power-off breaks that loop
+ 	 * instead of going round it, so this is the last chance to darken them. */
++	fprintf(stderr, "power: off, %u s after boot\n", (plat_now_ms() - t_boot0) / 1000);
+ 	plat_leds_off();
+ 	remember_place(a);
  	book_keep(true);
  	plat_request_poweroff();
++	plat_poweroff_backstop();
  	anim_poweroff(a);
 +	/* The boot animation put right for the next start, whatever happened
 +	 * since this one - the timed swap after the first frame may never have
@@ -1218,7 +1544,7 @@ index 6ae0cad..574b0ef 100644
  	/* And dark the moment it ends. The rest of the shutdown is not instant -
  	 * on the GKD Pixel 2 it waits for the programs on the card to go before
  	 * unmounting it - and the shell stayed lit through all of it. Eric's
-@@ -3781,6 +4350,8 @@ static void menu_draw_ex(app *a, const char *heading, const menu_row *rows,
+@@ -3781,6 +4424,8 @@ static void menu_draw_ex(app *a, const char *heading, const menu_row *rows,
  {
  	TTF_Font *fm = ui_font(UI_F_MENU), *fh = ui_font(UI_F_LABEL);
  	int row_h = menu_row_h();
@@ -1227,7 +1553,7 @@ index 6ae0cad..574b0ef 100644
  	int pad = menu_pad();
  	/* A rule is 2px of bar plus the gap the heading's rule gets below it, so
  	 * the footer sits off the list by the same amount the first row sits off
-@@ -6637,7 +7208,7 @@ static bool stats_screen(app *a)
+@@ -6637,7 +7282,7 @@ static bool stats_screen(app *a)
  					 * written for a mode that enters, shipped to one that
  					 * does not, and the lesson recorded was that three UI
  					 * directions are three code paths. */
@@ -1236,7 +1562,7 @@ index 6ae0cad..574b0ef 100644
  						cf_reset(&a->cf_sys, a->sys_cursor);
  						cf_reset(&a->view[si].cf, a->view[si].cursor);
  					} else {
-@@ -6766,8 +7337,9 @@ static void about_screen(app *a)
+@@ -6766,8 +7411,9 @@ static void about_screen(app *a)
   * follows UI Direction, because which axis moves is what that setting does. */
  static ctl_dir controls_dir(void)
  {
@@ -1248,7 +1574,7 @@ index 6ae0cad..574b0ef 100644
  	return CTL_HORIZONTAL;
  }
  
-@@ -7078,6 +7650,50 @@ static int sysmenu_build(void *ctx, menu_row *rows, int max,
+@@ -7078,6 +7724,50 @@ static int sysmenu_build(void *ctx, menu_row *rows, int max,
  	return n > max ? max : n;
  }
  
@@ -1299,7 +1625,7 @@ index 6ae0cad..574b0ef 100644
  /* Left and right cycle the value on a row that has one; A opens whatever the
   * row leads to. Everything else the runner has already dealt with. */
  static menu_result sysmenu_key(app *a, void *ctx, in_button key, int sel)
-@@ -7154,38 +7770,7 @@ static menu_result sysmenu_key(app *a, void *ctx, in_button key, int sel)
+@@ -7154,38 +7844,7 @@ static menu_result sysmenu_key(app *a, void *ctx, in_button key, int sel)
  		 * to sit in the old order is not. On Muse's shelf the same goes for
  		 * the album, whose folder is its `file`. */
  		if (d && sel == SM_SORT) {
@@ -1339,7 +1665,7 @@ index 6ae0cad..574b0ef 100644
  			return MENU_STAY;
  		}
  		if (key != IN_ACCEPT) return MENU_STAY;
-@@ -7237,10 +7822,11 @@ static menu_result sysmenu_key(app *a, void *ctx, in_button key, int sel)
+@@ -7237,10 +7896,11 @@ static menu_result sysmenu_key(app *a, void *ctx, in_button key, int sel)
  	 * is rebuilt: the panel's cached width is measured from font metrics, and
  	 * any card generated for a game with no box art has its title baked in at
  	 * the old size. Both are dropped here rather than left subtly wrong. */
@@ -1355,7 +1681,7 @@ index 6ae0cad..574b0ef 100644
  	 *
  	 * Themes the systems shelf today. The name is deliberately wider than
  	 * that, so menu colors or the accent rule can join without the row having
-@@ -7250,6 +7836,8 @@ static menu_result sysmenu_key(app *a, void *ctx, in_button key, int sel)
+@@ -7250,6 +7910,8 @@ static menu_result sysmenu_key(app *a, void *ctx, in_button key, int sel)
  
  		if (k != g_cards) {
  			g_cards = k;
@@ -1364,7 +1690,7 @@ index 6ae0cad..574b0ef 100644
  			free_all_textures(a);
  			prime_sys_window(a);
  			db_set_str(db_dev(), "cards", CARD_SETS[g_cards].id);
-@@ -7299,6 +7887,8 @@ static menu_result sysmenu_key(app *a, void *ctx, in_button key, int sel)
+@@ -7299,6 +7961,8 @@ static menu_result sysmenu_key(app *a, void *ctx, in_button key, int sel)
  	case PM_BT:           bt_screen(a); break;
  	case PM_CLOCK:        clock_screen(a); break;
  	case PM_STATS:        if (stats_screen(a)) return MENU_DONE; break;
@@ -1373,7 +1699,7 @@ index 6ae0cad..574b0ef 100644
  	case PM_CONTROLS:     controls_screen(a); break;
  	case PM_ABOUT:        about_screen(a); break;
  	default: break;
-@@ -7324,6 +7914,10 @@ static void tortos_menu_for(app *a, int screen)
+@@ -7324,6 +7988,10 @@ static void tortos_menu_for(app *a, int screen)
  	};
  
  	menu_run(a, &st, sysmenu_build, sysmenu_key, &c);
@@ -1384,7 +1710,7 @@ index 6ae0cad..574b0ef 100644
  }
  
  static void tortos_menu(app *a)
-@@ -7673,6 +8267,12 @@ static int gm_build(app *a, menu_row *out, gm_bufs *b)
+@@ -7673,6 +8341,12 @@ static int gm_build(app *a, menu_row *out, gm_bufs *b)
  	gm_ui u;
  
  	u.dmode  = DMODES[a->view[a->sys_cursor].dmode].label;
@@ -1397,7 +1723,7 @@ index 6ae0cad..574b0ef 100644
  	u.earned = chv_earned();
  	u.total  = chv_count();
  	return gm_rows(&u, out, b);
-@@ -8259,6 +8859,7 @@ static unsigned np_draw(app *a, const mu_now *mn, const char *next)
+@@ -8259,6 +8933,7 @@ static unsigned np_draw(app *a, const mu_now *mn, const char *next)
  	/* A book played to its end says so, rather than that it stopped. */
  	if (mn->state == MU_STOPPED && book >= 0 && g_book_done && g_book_done[book])
  		state = "Finished";
@@ -1405,35 +1731,17 @@ index 6ae0cad..574b0ef 100644
  
  	SDL_SetRenderDrawColor(r, UI_BG_R, UI_BG_G, UI_BG_B, 255);
  	SDL_RenderClear(r);
-@@ -8420,13 +9021,55 @@ static bool lock_allowed(void)
+@@ -8420,9 +9095,31 @@ static bool lock_allowed(void)
  	return musec_playing() && !g_muse_over;
  }
  
-+/* The Zune theme's pocket lock is stricter, for a player carried in a
-+ * pocket: START held on Now Playing, or its options' "lock screen", and then
-+ * every button is ignored - volume and power too - but MENU, which wakes it.
-+ * A wake that no other button follows within ZUNE_RELOCK_MS locks again, so
-+ * MENU bumped in a pocket lights the screen for moments, not hours. Auto Off
-+ * still turns the player off once the music has stopped. */
-+#define ZUNE_RELOCK_MS 10000
-+static unsigned g_relock_at;             /* after a MENU wake; 0 when none */
++/* The Zune theme's pocket lock: START held on Now Playing, or its options'
++ * "lock screen" - the sleep a tap of power is (sleep_until_tap), after a
++ * moment saying so. Until 2026-10-16 it was its own lock, MENU waking it and
++ * the volume ignored. */
 +
-+/* The relock after a wake: true when it is due, the screen untouched. */
-+static bool zune_relock_due(const in_state *in)
-+{
-+	int b;
-+
-+	if (!zune_ui() || !g_relock_at) return false;
-+	for (b = 0; b < IN_COUNT; b++)
-+		if (in->pressed[b] || in->down[b]) { g_relock_at = 0; return false; }
-+	if ((int)(plat_now_ms() - g_relock_at) < 0) return false;
-+	g_relock_at = 0;
-+	return lock_allowed();
-+}
-+
-+/* What the screen says for a moment before it goes dark: "locked", or the
-+ * menu's "screen off". */
-+static const char *g_lock_word = "locked";
++/* What the screen says for a moment before it goes dark. */
++static const char *const g_lock_word = "locked";
 +
 +static void zune_lock_note(app *a)
 +{
@@ -1442,7 +1750,7 @@ index 6ae0cad..574b0ef 100644
 +
 +	zune_clear(a->r);
 +	zune_text(a->r, big, g_lock_word, TORTOS_SCREEN_W / 2, y, 0, ZUNE_WHITE);
-+	zune_text(a->r, small, "press menu to wake", TORTOS_SCREEN_W / 2,
++	zune_text(a->r, small, "tap power to wake", TORTOS_SCREEN_W / 2,
 +	          y + (big ? TTF_FontLineSkip(big) : 56) + 10, 0, ZUNE_GRAY);
 +	plat_present();
 +	SDL_Delay(900);
@@ -1452,17 +1760,11 @@ index 6ae0cad..574b0ef 100644
   * are brightness, so pressing both nudges one down and one up, which cancels;
 - * once both are held they stop repeating. True when the chord locked. */
 + * once both are held they stop repeating. True when the screen should lock:
-+ * the chord, or the Zune theme's relock after a wake. */
++ * the chord. */
  static bool muse_keys(app *a)
  {
  	in_state *in = &a->in;
- 
-+	if (zune_relock_due(in)) return true;
-+
- 	if (in_repeat(in, IN_VOLUP)) plat_volume_nudge(+1);
- 	if (in_repeat(in, IN_VOLDN)) plat_volume_nudge(-1);
- 	if (in->down[IN_BRIGHTUP] && in->down[IN_BRIGHTDN]) {
-@@ -8440,11 +9083,15 @@ static bool muse_keys(app *a)
+@@ -8440,20 +9137,35 @@ static bool muse_keys(app *a)
  	return false;
  }
  
@@ -1476,79 +1778,55 @@ index 6ae0cad..574b0ef 100644
 +	bool pocket = zune_ui();
 +
  	fprintf(stderr, "muse: locked\n");
-+	if (pocket) zune_lock_note(a);
++	/* The Zune theme's lock is the sleep a tap of power is, since 2026-10-16:
++	 * one way to wake, the volume still working. */
++	if (pocket) {
++		zune_lock_note(a);
++		if (sleep_until_tap(a, &a->in)) muse_power(a);
++		fprintf(stderr, "muse: unlocked\n");
++		return;
++	}
  	plat_backlight(false);
  	plat_input_flush();
  	memset(&a->in, 0, sizeof a->in);
-@@ -8452,6 +9099,19 @@ static void muse_locked(app *a)
++	/* Dark already, so a tap of power is no sleep inside this one: it
++	 * unlocks, as the chord does (power_tap sees g_asleep). */
++	g_asleep = true;
+ 	while (!want_quit && a->running) {
  		muse_screen_poll();
  		plat_input_poll(&a->in);
  		if (a->in.quit_requested) { a->running = false; break; }
-+		if (pocket) {
-+			if (idle_due(a)) {
-+				plat_backlight(true);
-+				muse_power(a);
-+				break;
-+			}
-+			if (a->in.pressed[IN_MENU]) {
-+				g_relock_at = plat_now_ms() + ZUNE_RELOCK_MS;
-+				break;
-+			}
-+			SDL_Delay(30);
-+			continue;
-+		}
- 		/* Power, or Auto Off once the music has stopped long enough. The
- 		 * light first, so the power-off animation is seen. */
+-		/* Power, or Auto Off once the music has stopped long enough. The
+-		 * light first, so the power-off animation is seen. */
++		if (a->in.power_tap) break;
++		/* Power held, or Auto Off once the music has stopped long enough.
++		 * The light first, so the power-off animation is seen. */
  		if (a->in.pressed[IN_POWER] || idle_due(a)) {
-@@ -8470,6 +9130,47 @@ static void muse_locked(app *a)
+ 			plat_backlight(true);
+ 			muse_power(a);
+@@ -8464,12 +9176,21 @@ static void muse_locked(app *a)
+ 		if (lock_chord(&a->in)) break;
+ 		SDL_Delay(30);
+ 	}
++	g_asleep = false;
+ 	plat_backlight(true);
+ 	fprintf(stderr, "muse: unlocked\n");
+ 	plat_input_flush();
  	memset(&a->in, 0, sizeof a->in);
  }
  
-+/* The menu's Screen Off: the pocket lock, music or none - the screen out and
-+ * every button but MENU ignored, whatever is playing playing on. In the Zune
-+ * theme a MENU wake that no other button follows within ZUNE_RELOCK_MS goes
-+ * dark again, as the lock does; any other button keeps it awake. Auto Off
-+ * still turns the device off once nothing plays, so a sleep with no music is
-+ * the screen off until the power goes, not a battery left to drain. In the
-+ * other themes it is Muse's lock, F1+F2 (FUNCTION with both volume keys on
-+ * the Pixel 2) undoing it. */
++/* The menu's Screen Off: the sleep a tap of power is, music or none - the
++ * screen out, the volume working, another tap of power waking it. Auto Off
++ * still turns the device off once nothing plays. */
 +static void screen_sleep(app *a)
 +{
-+	g_lock_word = "screen off";
-+	while (!want_quit && a->running) {
-+		unsigned until;
-+		bool woke = false;
-+
-+		muse_locked(a);
-+		g_relock_at = 0;                 /* the wait below is the relock */
-+		/* Gone dark for good, or powered off by Auto Off: nothing to wake. */
-+		if (!zune_ui() || want_quit || !a->running || g_muse_gone) break;
-+		until = plat_now_ms() + ZUNE_RELOCK_MS;
-+		while (!want_quit && a->running && !woke) {
-+			int b;
-+
-+			render(a);
-+			plat_input_poll(&a->in);
-+			if (a->in.quit_requested) { a->running = false; break; }
-+			if (idle_due(a)) { muse_power(a); goto out; }
-+			for (b = 0; b < IN_COUNT; b++)
-+				if (a->in.pressed[b]) woke = true;
-+			if (!woke && (int)(plat_now_ms() - until) >= 0) break;
-+			SDL_Delay(30);
-+		}
-+		if (woke) break;
-+	}
-+out:
-+	g_lock_word = "locked";
-+	plat_input_flush();
-+	memset(&a->in, 0, sizeof a->in);
-+	redraw_now();
++	if (sleep_until_tap(a, &a->in)) muse_power(a);
 +}
 +
  /* MENU, from any Muse screen: Muse's own menu, the one its shelf has always
   * had. One button, one meaning, wherever in Muse it is pressed - it used to
   * close Muse from Now Playing and the tracks, and open this on the shelf.
-@@ -8510,6 +9211,11 @@ static muse_exit muse_now_screen(app *a)
+@@ -8510,6 +9231,11 @@ static muse_exit muse_now_screen(app *a)
  	} shown, drawn;
  	unsigned due = 0;
  	muse_exit how = MUSE_BACK;
@@ -1560,7 +1838,7 @@ index 6ae0cad..574b0ef 100644
  
  	mq_reset(MQ_NP);
  	memset(&drawn, 0, sizeof drawn);
-@@ -8521,7 +9227,7 @@ static muse_exit muse_now_screen(app *a)
+@@ -8521,7 +9247,7 @@ static muse_exit muse_now_screen(app *a)
  		const char *nt;
  		char next[128] = "";
  		unsigned now;
@@ -1569,7 +1847,7 @@ index 6ae0cad..574b0ef 100644
  		int b;
  
  		muse_screen_poll();
-@@ -8536,9 +9242,59 @@ static muse_exit muse_now_screen(app *a)
+@@ -8536,9 +9262,59 @@ static muse_exit muse_now_screen(app *a)
  			how = muse_menu(a);
  			if (how != MUSE_BACK) break;
  			memset(&drawn, 0, sizeof drawn);     /* the menu drew over it */
@@ -1629,7 +1907,7 @@ index 6ae0cad..574b0ef 100644
  		/* A, and only A. X did the same thing here and pausing in the list,
  		 * which made one button mean two things a screen apart; it is left
  		 * free in Muse for something that needs it. Eric's call, 2026-09-19. */
-@@ -8553,10 +9309,15 @@ static muse_exit muse_now_screen(app *a)
+@@ -8553,10 +9329,15 @@ static muse_exit muse_now_screen(app *a)
  		if (in_repeat(&a->in, IN_R1))       musec_next();
  		if (in_repeat(&a->in, IN_LEFT))     musec_seek_by(-seek_step(&a->in, IN_LEFT));
  		if (in_repeat(&a->in, IN_RIGHT))    musec_seek_by(+seek_step(&a->in, IN_RIGHT));
@@ -1646,7 +1924,7 @@ index 6ae0cad..574b0ef 100644
  			continue;
  		}
  
-@@ -8629,6 +9390,19 @@ static int muse_playing_album(int *row)
+@@ -8629,6 +9410,19 @@ static int muse_playing_album(int *row)
  	const char *t = musec_track(musec_now()->index);
  	int al = ml_album_of(&g_muse, t), i;
  
@@ -1666,7 +1944,7 @@ index 6ae0cad..574b0ef 100644
  	if (row) *row = 0;
  	if (al < 0) return -1;
  	if (row)
-@@ -8754,9 +9528,13 @@ static muse_exit muse_tracks(app *a, int album, bool now)
+@@ -8754,9 +9548,13 @@ static muse_exit muse_tracks(app *a, int album, bool now)
  						paths[i] = g_muse.tracks[al->first + i].path;
  					/* A book's file from its start: choosing one is choosing
  					 * where to listen from, and the place moves with it. */
@@ -1681,7 +1959,7 @@ index 6ae0cad..574b0ef 100644
  					free(paths);
  				}
  			}
-@@ -8811,7 +9589,8 @@ static bool muse_open(app *a, const menu_style *over, void *ctx)
+@@ -8811,7 +9609,8 @@ static bool muse_open(app *a, const menu_style *over, void *ctx)
  	g_muse_over = over;
  	g_muse_over_ctx = ctx;
  	g_muse_gone = false;
@@ -1691,7 +1969,7 @@ index 6ae0cad..574b0ef 100644
  	g_muse_over = NULL;
  	g_muse_over_ctx = NULL;
  	/* Nothing Muse did closes the menu it may have been opened over. */
-@@ -8852,6 +9631,9 @@ static muse_exit muse_album(app *a, const sysview *v, int k)
+@@ -8852,6 +9651,9 @@ static muse_exit muse_album(app *a, const sysview *v, int k)
  	return muse_tracks(a, v->album[k], false);
  }
  
@@ -1701,7 +1979,7 @@ index 6ae0cad..574b0ef 100644
  /* Muse's shelf again after its menu, whose Rescan Folder rebuilds every view
   * on the card, so the view being held is found again rather than trusted.
   * NULL when there is no Muse left to show. */
-@@ -8901,13 +9683,12 @@ static int muse_card_of(const sysview *v, int album)
+@@ -8901,13 +9703,12 @@ static int muse_card_of(const sysview *v, int album)
  static void muse_shelf_screen(app *a, bool now)
  {
  	int prev_screen = a->screen, prev_sys = a->sys_cursor;
@@ -1717,7 +1995,7 @@ index 6ae0cad..574b0ef 100644
  	for (i = 0; i < a->sys.count; i++)
  		if (is_muse(&a->sys.systems[i])) { muse = i; break; }
  	if (muse < 0 || a->view[muse].list.count <= 0) return;
-@@ -9014,6 +9795,11 @@ static int muse_artist_of(int al)
+@@ -9014,6 +9815,11 @@ static int muse_artist_of(int al)
  
  static void muse_album_dir(int al, char *out, size_t n)
  {
@@ -1729,7 +2007,7 @@ index 6ae0cad..574b0ef 100644
  	const char *p = g_muse.albums[al].n > 0 ? g_muse.tracks[g_muse.albums[al].first].path : "";
  	const char *slash = strrchr(p, '/');
  
-@@ -9041,7 +9827,7 @@ static int museart_jobs(museart_job *jobs, int max)
+@@ -9041,7 +9847,7 @@ static int museart_jobs(museart_job *jobs, int max)
  		 * own file or the picture in its folder. Nor Singles, which is no
  		 * record at all and has its own cover. */
  		if (g_muse.albums[i].n <= 0 || g_muse.albums[i].book ||
@@ -1738,7 +2016,7 @@ index 6ae0cad..574b0ef 100644
  		muse_album_dir(i, dir, sizeof dir);
  		snprintf(key, sizeof key, "museart.%s", dir);
  		ml_cover_base(g_muse_root, &g_muse, i, j->base, sizeof j->base);
-@@ -9447,6 +10233,8 @@ static int gm_width(app *a)
+@@ -9447,6 +10253,8 @@ static int gm_width(app *a)
  	int w = 0, k;
  
  	gm_build(a, rows, &b);
@@ -1747,7 +2025,7 @@ index 6ae0cad..574b0ef 100644
  	for (k = 0; k < DMODE_COUNT; k++) {
  		int mw;
  		rows[GM_DISPLAY].value = DMODES[k].label;
-@@ -9514,6 +10302,31 @@ static menu_result gm_key(app *a, void *ctx, in_button key, int sel)
+@@ -9514,6 +10322,31 @@ static menu_result gm_key(app *a, void *ctx, in_button key, int sel)
  		gm_cycle_display(a, key == IN_RIGHT ? 1 : -1);
  		return MENU_STAY;
  	}
@@ -1779,7 +2057,37 @@ index 6ae0cad..574b0ef 100644
  	if (key != IN_ACCEPT) return MENU_STAY;
  
  	switch ((gm_row)sel) {
-@@ -9693,6 +10506,7 @@ static void respawn_resident(app *a)
+@@ -9649,6 +10482,29 @@ static void game_menu(app *a)
+ 	/* Nothing presents from here: the next frame on screen is the game's. */
+ }
+ 
++/* Power tapped in a game: Diatom paused it (PAUSE, answered as MENU is) and
++ * the device sleeps as from any screen, the game going on where it stopped at
++ * the tap that wakes it. Nothing is drawn, so there are no pages to hand back
++ * blacked, as the menu must. Held, or Auto Off while asleep, and it ends the
++ * way power held in a game always has: STOP, the game saved on its way out,
++ * and the device off after it. The volume may have moved while asleep, and
++ * is the launcher's while the game is paused, so it goes back with the game. */
++static void game_sleep(app *a)
++{
++	bool off = sleep_until_tap(a, &a->in);
++
++	if (off || want_quit || !a->running) {
++		if (off) plat_note_power_pressed();
++		plat_resident_line("STOP");
++		return;
++	}
++	if (plat_volume_get() >= 0)
++		plat_resident_line("SETLEVEL\tkind=volume\tindex=%d\tcount=%d",
++		                   plat_volume_get(), PLAT_VOL_MAX + 1);
++	plat_resident_quiet(musec_playing());
++	plat_resident_line("RESUME");
++}
++
+ /* Bring the resident emulator back.
+  *
+  * With one process per game a core that segfaults takes down that game and
+@@ -9693,6 +10549,7 @@ static void respawn_resident(app *a)
  
  static void launch(app *a)
  {
@@ -1787,7 +2095,20 @@ index 6ae0cad..574b0ef 100644
  	sysview *v = &a->view[a->sys_cursor];
  	/* The game's system, not the shelf's. Launching a favorite off the
  	 * Favorites shelf otherwise loads whatever core the shelf claims, which
-@@ -10003,6 +10817,8 @@ static void launch(app *a)
+@@ -9928,7 +10785,11 @@ static void launch(app *a)
+ 			 * shelf simply holds until the game's first frame replaces it. */
+ 			for (;;) {
+ 				r = plat_resident_wait();
+-				if (r == RES_PAUSED) { game_menu(a); continue; }
++				if (r == RES_PAUSED) {
++					if (plat_resident_sleep_asked()) game_sleep(a);
++					else game_menu(a);
++					continue;
++				}
+ 				break;
+ 			}
+ 			resident = (r == RES_EXIT);
+@@ -10003,6 +10864,8 @@ static void launch(app *a)
  		 * the display, so this side tears its own down first. */
  		anim_launch(a, 190);
  		free_all_textures(a);
@@ -1796,7 +2117,7 @@ index 6ae0cad..574b0ef 100644
  		ui_quit();
  		plat_input_quit();
  		plat_video_quit();
-@@ -10048,6 +10864,8 @@ static void launch(app *a)
+@@ -10048,6 +10911,8 @@ static void launch(app *a)
  		if (!plat_video_init() || !plat_input_init()) { a->running = false; return; }
  		a->r = plat_renderer();
  		ui_init(a->r, P_FONT);
@@ -1805,7 +2126,7 @@ index 6ae0cad..574b0ef 100644
  		a->menu_w = 0;   /* fonts reopened: remeasure the panel */
  		prime_sys_window(a);
  		prime_window(a, a->sys_cursor);
-@@ -10126,6 +10944,9 @@ static void enter_system(app *a)
+@@ -10126,6 +10991,9 @@ static void enter_system(app *a)
  	 * own A - see update_games. */
  	if (v->list.count == 0) return;
  	a->screen = SCREEN_GAMES;
@@ -1815,7 +2136,7 @@ index 6ae0cad..574b0ef 100644
  	cf_reset(&v->cf, v->cursor);
  	prime_window(a, a->sys_cursor);
  }
-@@ -10233,10 +11054,13 @@ static void update_systems(app *a)
+@@ -10233,10 +11101,13 @@ static void update_systems(app *a)
  	 * the first system at the bottom, the last at the top, so up advances.
  	 * Down-is-next is the convention for a list on a page; a stack is read
  	 * from the bottom, and this shelf is a stack. */
@@ -1831,7 +2152,7 @@ index 6ae0cad..574b0ef 100644
  	if (in_repeat(&a->in, back)) { a->sys_cursor = (a->sys_cursor - 1 + n) % n; dir = -1; }
  	if (in_repeat(&a->in, fwd))  { a->sys_cursor = (a->sys_cursor + 1) % n; dir = +1; }
  	if (dir) load_ahead(a);
-@@ -10314,10 +11138,19 @@ static int shelf_letter_jump(sysview *v, int dir)
+@@ -10314,10 +11185,19 @@ static int shelf_letter_jump(sysview *v, int dir)
  	return shelf_group_start(v, i);
  }
  
@@ -1851,7 +2172,7 @@ index 6ae0cad..574b0ef 100644
  	if (n <= 0) { a->screen = SCREEN_SYSTEMS; return; }
  	/* MUSE HAS ONE DOOR. Its card used to open its shelf HERE, in the main
  	 * loop, as if it were a console: a second Muse beside the one SELECT
-@@ -10335,21 +11168,23 @@ static void update_games(app *a)
+@@ -10335,21 +11215,23 @@ static void update_games(app *a)
  	 * reassigned onto the other: stepping always runs along the row, and the
  	 * letter jump always runs across it. Turning the shelf turns the d-pad
  	 * with it and nothing is left doing two jobs. */
@@ -1880,7 +2201,7 @@ index 6ae0cad..574b0ef 100644
  	/* HERE, AND NOT AT THE END OF THE PASS, because four of the handlers below
  	 * return without reaching the end.
  	 *
-@@ -10392,7 +11227,14 @@ static void update_games(app *a)
+@@ -10392,7 +11274,14 @@ static void update_games(app *a)
  		refresh_favorites_shelf(a);
  		return;
  	}
@@ -1896,7 +2217,7 @@ index 6ae0cad..574b0ef 100644
  }
  
  /* ---------- main ---------------------------------------------------------- */
-@@ -10609,6 +11451,7 @@ static void refresh_favorites_shelf(app *a)
+@@ -10609,6 +11498,7 @@ static void refresh_favorites_shelf(app *a)
  {
  	/* Favorites is rebuilt in place, so its indices now name other games. */
  	texload_bump();
@@ -1904,7 +2225,7 @@ index 6ae0cad..574b0ef 100644
  	char tag[sizeof a->sys.systems[0].tag];
  	int cur, i, order = 0;
  
-@@ -10691,11 +11534,22 @@ static void muse_order_view(sysview *v)
+@@ -10691,11 +11581,22 @@ static void muse_order_view(sysview *v)
  	if (!v->album) return;
  	v->list.count = ml_shelf_order(&g_muse, (ml_order)v->sort, muse_books_shown(),
  	                               v->album);
@@ -1928,7 +2249,7 @@ index 6ae0cad..574b0ef 100644
  		snprintf(e->title, sizeof e->title, "%s", g_muse.albums[al].name);
  		muse_album_dir(al, e->file, sizeof e->file);
  	}
-@@ -10743,8 +11597,12 @@ static void muse_tidy_singles(void)
+@@ -10743,8 +11644,12 @@ static void muse_tidy_singles(void)
  	 * allowed to show or skip entries. */
  	while ((e = readdir(d))) {
  		if (e->d_name[0] == '.' || !ml_is_audio(e->d_name)) continue;
@@ -1942,7 +2263,7 @@ index 6ae0cad..574b0ef 100644
  		    strlen(e->d_name) >= sizeof loose[0])
  			continue;
  		if (nloose == cap) {
-@@ -10823,7 +11681,7 @@ static void flat_albums_find(void)
+@@ -10823,7 +11728,7 @@ static void flat_albums_find(void)
  		const ml_album *al = &g_muse.albums[i];
  		const char *p, *slash;
  
@@ -1951,7 +2272,133 @@ index 6ae0cad..574b0ef 100644
  		p = g_muse.tracks[al->first].path;            /* Music/<album>/<track> */
  		if (strncmp(p, "Music/", 6) || !(slash = strchr(p + 6, '/')) ||
  		    strchr(slash + 1, '/'))
-@@ -10955,6 +11813,7 @@ static void build_muse_shelf(app *a)
+@@ -10935,6 +11840,125 @@ static void muse_file_albums(void)
+ 	}
+ }
+ 
++/* ---- Muse: the library index ----------------------------------------------
++ *
++ * A boot reads the library from the index (ml_save, ml_load) that the last
++ * reading of the folders left, and shows it; the folders are read again
++ * behind it, on a thread of their own, a few seconds after the first frame,
++ * with the CPU's leftovers. Found the same, nothing happens. Found changed -
++ * music copied on, or taken off by the Windows app - the new reading is
++ * written as the index and handed to the main loop, which puts it on the
++ * shelf as Over The Hare's uploads are, rescan_all: on the shelf and the
++ * Zune menu, never under a Muse screen that holds an album's index.
++ *
++ * A first boot, with no index, reads the folders while the boot waits, as it
++ * always did, and leaves the index for the next. So does every later reading
++ * on the main thread (an upload, an album filed), keeping the index the
++ * library the shelf shows. */
++#define MIX_FILE      "muse-index.bin"
++#define MIX_CHECK_MS  5000         /* after the boot, before the folders are read */
++
++enum { MIX_IDLE, MIX_RUNNING, MIX_SAME, MIX_CHANGED };
++static SDL_atomic_t g_mix_state;
++static ml_lib g_mix_lib;           /* the thread's reading, when it changed */
++static unsigned long long g_mix_hash;
++static char g_mix_root[sizeof g_muse_root];
++static bool g_muse_take_mix;       /* build_muse_shelf: g_mix_lib, not the folders */
++static bool g_muse_booted;
++
++static void mix_path(char *out, size_t n)
++{
++	snprintf(out, n, "%s/%s", P_USERDATA, MIX_FILE);
++}
++
++static int mix_check(void *arg)
++{
++	char path[LIB_PATH * 2];
++	unsigned t0;
++	ml_lib l;
++
++	(void)arg;
++	SDL_Delay(MIX_CHECK_MS);
++	/* This thread only: the shelf's frames come first. */
++	if (setpriority(PRIO_PROCESS, 0, 10) != 0) { /* still check */ }
++	t0 = plat_now_ms();
++	if (!ml_scan_card(g_mix_root, &l) || l.ntracks == 0) {
++		ml_free(&l);
++		fprintf(stderr, "muse: index check found no music; the shelf keeps the index\n");
++		SDL_AtomicSet(&g_mix_state, MIX_SAME);
++		return 0;
++	}
++	if (ml_hash(&l) == g_mix_hash) {
++		ml_free(&l);
++		fprintf(stderr, "muse: index checked against the card in %u ms, the same\n",
++		        plat_now_ms() - t0);
++		SDL_AtomicSet(&g_mix_state, MIX_SAME);
++		return 0;
++	}
++	mix_path(path, sizeof path);
++	fprintf(stderr, "muse: the card changed (%d tracks, read in %u ms); index %s\n",
++	        l.ntracks, plat_now_ms() - t0, ml_save(&l, path) ? "rewritten" : "NOT WRITTEN");
++	g_mix_lib = l;
++	SDL_AtomicSet(&g_mix_state, MIX_CHANGED);   /* after the lib: a full barrier */
++	return 0;
++}
++
++/* From the main loop: true once, when the folders turned out to hold another
++ * library than the index, which build_muse_shelf then takes. */
++static bool muse_index_changed(void)
++{
++	int st = SDL_AtomicGet(&g_mix_state);
++
++	if (st == MIX_SAME) SDL_AtomicSet(&g_mix_state, MIX_IDLE);
++	if (st != MIX_CHANGED) return false;
++	SDL_AtomicSet(&g_mix_state, MIX_IDLE);
++	g_muse_take_mix = true;
++	return true;
++}
++
++/* The library into g_muse: the thread's new reading, the index at boot, or
++ * the folders. True when there is a library at all. */
++static bool muse_read_library(void)
++{
++	char path[LIB_PATH * 2];
++	unsigned t0 = plat_now_ms();
++	bool ok;
++
++	mix_path(path, sizeof path);
++	if (g_muse_take_mix) {
++		g_muse_take_mix = false;
++		g_muse = g_mix_lib;
++		memset(&g_mix_lib, 0, sizeof g_mix_lib);
++		g_mix_hash = ml_hash(&g_muse);
++		fprintf(stderr, "muse: the shelf takes the card's new library\n");
++		return g_muse.ntracks > 0;
++	}
++	if (!g_muse_booted && ml_load(&g_muse, path) && g_muse.ntracks > 0) {
++		SDL_Thread *th;
++
++		g_muse_booted = true;
++		g_mix_hash = ml_hash(&g_muse);
++		snprintf(g_mix_root, sizeof g_mix_root, "%s", g_muse_root);
++		fprintf(stderr, "muse: library from the index in %u ms\n", plat_now_ms() - t0);
++		/* Detached: it is never waited for, so a power-off in the middle
++		 * of it is not held up by a card being read. */
++		SDL_AtomicSet(&g_mix_state, MIX_RUNNING);
++		if ((th = SDL_CreateThread(mix_check, "museindex", NULL))) SDL_DetachThread(th);
++		else SDL_AtomicSet(&g_mix_state, MIX_IDLE);
++		return true;
++	}
++	g_muse_booted = true;
++	ok = ml_scan_card(g_muse_root, &g_muse) && g_muse.ntracks > 0;
++	g_mix_hash = ml_hash(&g_muse);
++	fprintf(stderr, "muse: library read from the folders in %u ms\n", plat_now_ms() - t0);
++	if (ok) {
++		if (!ml_save(&g_muse, path)) fprintf(stderr, "muse: index NOT WRITTEN to %s\n", path);
++	} else {
++		remove(path);
++	}
++	return ok;
++}
++
+ /* Muse's card, at the end of the shelf, when there is music to play.
+  *
+  * After Favorites and after the empty systems are hidden, so it is neither
+@@ -10955,6 +11979,7 @@ static void build_muse_shelf(app *a)
  	 * different album at every index. */
  	g_muse_gen++;
  	g_nflat = 0;
@@ -1959,7 +2406,16 @@ index 6ae0cad..574b0ef 100644
  	ml_free(&g_muse);
  	free(g_cov);
  	g_cov = NULL;
-@@ -11185,6 +12044,14 @@ static const char *shot_kb_text = "correct horse";
+@@ -10963,7 +11988,7 @@ static void build_muse_shelf(app *a)
+ 	np_forget();
+ 	snprintf(g_muse_root, sizeof g_muse_root, "%s", P_CARD);
+ 	muse_tidy_singles();
+-	if (!ml_scan_card(g_muse_root, &g_muse) || g_muse.ntracks == 0) {
++	if (!muse_read_library()) {
+ 		fprintf(stderr, "scan: %-16s no music or books in %s\n", "Muse", g_muse_root);
+ 		return;
+ 	}
+@@ -11185,6 +12210,14 @@ static const char *shot_kb_text = "correct horse";
  static const char *shot_kb_title = "Wi-Fi password";
  static int shot_slots, shot_slot_sel;
  static int shot_jump;               /* letter-jumps to apply before drawing */
@@ -1974,7 +2430,7 @@ index 6ae0cad..574b0ef 100644
  /* --nowplaying ALBUM [TRACK [SECONDS]], and --paused with it. */
  static int   shot_np = -1, shot_np_track, shot_np_paused;
  static float shot_np_at = 83.0f;
-@@ -11346,6 +12213,7 @@ static void take_shot(app *a)
+@@ -11346,6 +12379,7 @@ static void take_shot(app *a)
  		menu_draw(a, head, rows, n, -1, menu_std_width(a), MENU_ACCENT);
  	}
  	if (shot_np >= 0) np_shot(a);
@@ -1982,7 +2438,7 @@ index 6ae0cad..574b0ef 100644
  	if (shot_art)
  		art_preview(a, shot_art_now, "4 of 10 systems",
  		            "37 found, 2 missing, 61 already", true);
-@@ -11528,6 +12396,11 @@ int main(int argc, char *argv[])
+@@ -11528,6 +12562,11 @@ int main(int argc, char *argv[])
  		else if (!strcmp(argv[i], "--gamemove") && i + 1 < argc)
  			shot_gamemove = (float)atof(argv[++i]);
  		else if (!strcmp(argv[i], "--info")) shot_info = 1;
@@ -1994,7 +2450,7 @@ index 6ae0cad..574b0ef 100644
  		else if (!strcmp(argv[i], "--controls")) {
  			shot_controls = 0;
  			if (i + 1 < argc && argv[i + 1][0] >= '0' && argv[i + 1][0] <= '9')
-@@ -11921,6 +12794,7 @@ int main(int argc, char *argv[])
+@@ -11921,6 +12960,7 @@ int main(int argc, char *argv[])
  			 * cover it would ask for is drawn as missing instead - see
  			 * muse_covers_settle. */
  			musec_init(shot_path ? "" : bin, music);
@@ -2002,7 +2458,7 @@ index 6ae0cad..574b0ef 100644
  			musec_on_before_heard(aout_before_muse);
  		}
  		/* The play mode the player left it in. */
-@@ -11954,10 +12828,11 @@ int main(int argc, char *argv[])
+@@ -11954,10 +12994,11 @@ int main(int argc, char *argv[])
  	 * The card settings are only read by drawing, which comes long after. */
  	{
  		char set[CFG_STR];
@@ -2015,7 +2471,7 @@ index 6ae0cad..574b0ef 100644
  	}
  	a.sys_cursor = 0;
  	db_get_str(db_lib(), "startup_system", startup, sizeof startup, "");
-@@ -12028,6 +12903,8 @@ int main(int argc, char *argv[])
+@@ -12028,6 +13069,8 @@ int main(int argc, char *argv[])
  	 * saved brightness does. Read before ui_init, which is when the scale is
  	 * applied. */
  	if (!ui_init(a.r, P_FONT)) fprintf(stderr, "font init failed\n");
@@ -2024,7 +2480,7 @@ index 6ae0cad..574b0ef 100644
  	t_mark("font+settings");
  
  	/* The system cards asked for before the display came up, installed so the
-@@ -12044,6 +12921,20 @@ int main(int argc, char *argv[])
+@@ -12044,6 +13087,20 @@ int main(int argc, char *argv[])
  
  	if (shot_path) {
  		if (shot_screen >= 0) a.screen = (screen_id)shot_screen;
@@ -2045,7 +2501,30 @@ index 6ae0cad..574b0ef 100644
  		if (shot_jump) {
  			sysview *v = &a.view[a.sys_cursor];
  			int k, dir = shot_jump > 0 ? 1 : -1;
-@@ -12230,7 +13121,7 @@ int main(int argc, char *argv[])
+@@ -12131,6 +13188,9 @@ int main(int argc, char *argv[])
+ 	/* Nothing pressed during the boot is honored. How long that takes is the
+ 	 * device's to say - see plat_input_settle. */
+ 	plat_input_settle(&a.in);
++	/* Power's tap, from here on: the sleep, from whatever screen is up. */
++	g_sleep_app = &a;
++	plat_on_power_tap(power_tap);
+ 
+ 	/* Straight back into the game, before the shelf is ever drawn. After the
+ 	 * input grace above, so a wake press replayed by the boot does not land in
+@@ -12198,6 +13258,12 @@ int main(int argc, char *argv[])
+ 			rescan_all(&a);
+ 			redraw_now();
+ 		}
++		/* And the card read again behind the boot, if it found another
++		 * library than the index the shelf came up with. */
++		if (muse_index_changed()) {
++			rescan_all(&a);
++			redraw_now();
++		}
+ 
+ 		/* Auto Off is the same line as the power button, on every screen
+ 		 * that draws. Diatom watches it during a game, because it owns the
+@@ -12230,7 +13296,7 @@ int main(int argc, char *argv[])
  		 * MENU opens in a game. It draws over the shelf and returns here.
  		 * Both handles its own, because there MENU and B mean two different
  		 * menus and the screen cannot say which. */
@@ -2054,7 +2533,7 @@ index 6ae0cad..574b0ef 100644
  			update_both(&a);
  		} else {
  			if (a.in.pressed[IN_MENU]) { tortos_menu(&a); continue; }
-@@ -12258,6 +13149,18 @@ int main(int argc, char *argv[])
+@@ -12258,6 +13324,18 @@ int main(int argc, char *argv[])
  				render(&a);
  				if (!last_render) t_mark("first frame");
  				last_render = plat_now_ms();
@@ -2073,7 +2552,24 @@ index 6ae0cad..574b0ef 100644
  			} else {
  				SDL_Delay(IDLE_POLL_MS);
  			}
-@@ -12277,6 +13180,8 @@ done:
+@@ -12265,22 +13343,31 @@ int main(int argc, char *argv[])
+ 	}
+ 
+ done:
++	/* Each step of the way out timed in the log: a power-off is dark from its
++	 * first moment, so a step that hangs here cannot be seen any other way. */
++	t_exit0 = plat_now_ms();
++	fprintf(stderr, "exit: closing\n");
+ 	free_all_textures(&a);
+ 	/* First, and before IMG_Quit: the worker is inside IMG_Load, and the
+ 	 * views it decodes into are freed just below. The resizer too, for the
+ 	 * same IMG_Quit - it is in IMG_Load and IMG_SavePNG. */
+ 	texload_stop();
+ 	art_shrink_stop();
++	fprintf(stderr, "exit: workers stopped, %u ms\n", plat_now_ms() - t_exit0);
+ 	/* Told, not waited for - see ra_flush_stop. */
+ 	ra_flush_stop();
+ 	for (int i = 0; i < a.sys.count; i++) {
  		free(a.view[i].tex); free(a.view[i].tw); free(a.view[i].th);
  		lib_free(&a.view[i].list);
  	}
@@ -2082,8 +2578,21 @@ index 6ae0cad..574b0ef 100644
  	ui_quit();
  	IMG_Quit();
  	plat_input_quit();
+ 	plat_video_quit();
++	/* The last time SDL's clock can give: it starts again from nothing. */
++	fprintf(stderr, "exit: display closed, %u ms\n", plat_now_ms() - t_exit0);
+ 	SDL_Quit();
+ 
+ 	/* Close the databases, which is what checkpoints their WAL and removes
+@@ -12298,5 +13385,6 @@ done:
+ 	 *
+ 	 * A battery pull still leaves a WAL, which is what WAL recovery is for. */
+ 	db_shutdown();
++	fprintf(stderr, "exit: done\n");
+ 	return 0;
+ }
 diff --git a/src/muselib.c b/src/muselib.c
-index 8f7bb21..0d5b17b 100644
+index 8f7bb21..f8591c6 100644
 --- a/src/muselib.c
 +++ b/src/muselib.c
 @@ -287,12 +287,22 @@ static void list_dir(const char *dir, names *dirs, names *files)
@@ -2222,8 +2731,272 @@ index 8f7bb21..0d5b17b 100644
  	return true;
  }
  
+@@ -722,6 +820,263 @@ void ml_free(ml_lib *lib)
+ 	memset(lib, 0, sizeof *lib);
+ }
+ 
++/* ---- the index ------------------------------------------------------------- */
++
++/* "MLIX", a version, the three counts; then each artist, album and track as
++ * its strings (a u16 length and the bytes) and numbers (i32, and a byte of
++ * flags); then ml_hash of what was written, which a load checks against what
++ * it read. Little-endian u32s throughout, written byte by byte, so the file
++ * means the same to every build that reads it. */
++#define MLIX_MAGIC   "MLIX"
++#define MLIX_VERSION 1u
++
++typedef struct { unsigned char *b; size_t n, cap; bool bad; } mbuf;
++
++static void mb_put(mbuf *m, const void *p, size_t n)
++{
++	if (m->bad) return;
++	if (m->n + n > m->cap) {
++		size_t cap = m->cap ? m->cap * 2 : 65536;
++		unsigned char *b;
++
++		while (cap < m->n + n) cap *= 2;
++		if (!(b = realloc(m->b, cap))) { m->bad = true; return; }
++		m->b = b;
++		m->cap = cap;
++	}
++	memcpy(m->b + m->n, p, n);
++	m->n += n;
++}
++
++static void mb_u32(mbuf *m, unsigned v)
++{
++	unsigned char b[4] = { v & 255, (v >> 8) & 255, (v >> 16) & 255, (v >> 24) & 255 };
++
++	mb_put(m, b, 4);
++}
++
++static void mb_str(mbuf *m, const char *s)
++{
++	size_t n = strlen(s);
++	unsigned char b[2] = { n & 255, (n >> 8) & 255 };
++
++	mb_put(m, b, 2);
++	mb_put(m, s, n);
++}
++
++/* FNV-1a, 64-bit, over the bytes given and the strings' terminators. */
++static unsigned long long fnv(unsigned long long h, const void *p, size_t n)
++{
++	const unsigned char *b = p;
++
++	while (n--) { h ^= *b++; h *= 1099511628211ULL; }
++	return h;
++}
++
++static unsigned long long fnv_str(unsigned long long h, const char *s)
++{
++	return fnv(h, s, strlen(s) + 1);
++}
++
++static unsigned long long fnv_int(unsigned long long h, int v)
++{
++	unsigned char b[4] = { v & 255, (v >> 8) & 255, (v >> 16) & 255, (v >> 24) & 255 };
++
++	return fnv(h, b, 4);
++}
++
++unsigned long long ml_hash(const ml_lib *l)
++{
++	unsigned long long h = 14695981039346656037ULL;
++	int i;
++
++	h = fnv_int(h, l->nartists);
++	h = fnv_int(h, l->nalbums);
++	h = fnv_int(h, l->ntracks);
++	for (i = 0; i < l->nartists; i++) {
++		h = fnv_str(h, l->artists[i].name);
++		h = fnv_int(h, l->artists[i].first);
++		h = fnv_int(h, l->artists[i].n);
++		h = fnv_int(h, l->artists[i].book);
++	}
++	for (i = 0; i < l->nalbums; i++) {
++		const ml_album *a = &l->albums[i];
++
++		h = fnv_str(h, a->name);
++		h = fnv_int(h, a->first);
++		h = fnv_int(h, a->n);
++		h = fnv_int(h, a->book | a->singles << 1 | a->playlist << 2);
++	}
++	for (i = 0; i < l->ntracks; i++) {
++		h = fnv_str(h, l->tracks[i].name);
++		h = fnv_str(h, l->tracks[i].path);
++	}
++	return h;
++}
++
++bool ml_save(const ml_lib *l, const char *path)
++{
++	char tmp[LIB_PATH * 2];
++	unsigned long long h = ml_hash(l);
++	mbuf m = { 0 };
++	FILE *f;
++	bool ok;
++	int i;
++
++	mb_put(&m, MLIX_MAGIC, 4);
++	mb_u32(&m, MLIX_VERSION);
++	mb_u32(&m, (unsigned)l->nartists);
++	mb_u32(&m, (unsigned)l->nalbums);
++	mb_u32(&m, (unsigned)l->ntracks);
++	for (i = 0; i < l->nartists; i++) {
++		mb_str(&m, l->artists[i].name);
++		mb_u32(&m, (unsigned)l->artists[i].first);
++		mb_u32(&m, (unsigned)l->artists[i].n);
++		mb_put(&m, &(unsigned char){ l->artists[i].book }, 1);
++	}
++	for (i = 0; i < l->nalbums; i++) {
++		const ml_album *a = &l->albums[i];
++
++		mb_str(&m, a->name);
++		mb_u32(&m, (unsigned)a->first);
++		mb_u32(&m, (unsigned)a->n);
++		mb_put(&m, &(unsigned char){ a->book | a->singles << 1 | a->playlist << 2 }, 1);
++	}
++	for (i = 0; i < l->ntracks; i++) {
++		mb_str(&m, l->tracks[i].name);
++		mb_str(&m, l->tracks[i].path);
++	}
++	mb_u32(&m, (unsigned)(h & 0xffffffffu));
++	mb_u32(&m, (unsigned)(h >> 32));
++	if (m.bad) { free(m.b); return false; }
++
++	snprintf(tmp, sizeof tmp, "%s.new", path);
++	if (!(f = fopen(tmp, "wb"))) { free(m.b); return false; }
++	ok = fwrite(m.b, 1, m.n, f) == m.n;
++	ok = (fclose(f) == 0) && ok;
++	free(m.b);
++	if (ok) ok = rename(tmp, path) == 0;
++	if (!ok) remove(tmp);
++	return ok;
++}
++
++typedef struct { const unsigned char *b; size_t n, at; bool bad; } mread;
++
++static unsigned mr_u32(mread *r)
++{
++	const unsigned char *b;
++
++	if (r->bad || r->n - r->at < 4) { r->bad = true; return 0; }
++	b = r->b + r->at;
++	r->at += 4;
++	return b[0] | b[1] << 8 | b[2] << 16 | (unsigned)b[3] << 24;
++}
++
++static unsigned mr_u8(mread *r)
++{
++	if (r->bad || r->at >= r->n) { r->bad = true; return 0; }
++	return r->b[r->at++];
++}
++
++/* Into `out`, which holds `cap` bytes with its terminator; too long is damage. */
++static void mr_str(mread *r, char *out, size_t cap)
++{
++	size_t len;
++
++	if (r->bad || r->n - r->at < 2) { r->bad = true; out[0] = 0; return; }
++	len = r->b[r->at] | r->b[r->at + 1] << 8;
++	r->at += 2;
++	if (len >= cap || r->n - r->at < len) { r->bad = true; out[0] = 0; return; }
++	memcpy(out, r->b + r->at, len);
++	out[len] = 0;
++	r->at += len;
++}
++
++/* A range of `of` a count says it covers: inside it, and nothing negative. */
++static bool in_range(int first, int n, int of)
++{
++	return first >= 0 && n >= 0 && first <= of && n <= of - first;
++}
++
++bool ml_load(ml_lib *out, const char *path)
++{
++	FILE *f = fopen(path, "rb");
++	unsigned char *b = NULL;
++	long size;
++	mread r = { 0 };
++	unsigned na, nb, nt, lo, hi;
++	unsigned long long h;
++	unsigned i;
++
++	memset(out, 0, sizeof *out);
++	if (!f) return false;
++	if (fseek(f, 0, SEEK_END) != 0 || (size = ftell(f)) < 24 || size > 512L * 1024 * 1024 ||
++	    fseek(f, 0, SEEK_SET) != 0 || !(b = malloc((size_t)size)) ||
++	    fread(b, 1, (size_t)size, f) != (size_t)size) {
++		fclose(f);
++		free(b);
++		return false;
++	}
++	fclose(f);
++	r.b = b;
++	r.n = (size_t)size;
++	if (memcmp(b, MLIX_MAGIC, 4) != 0) goto bad;
++	r.at = 4;
++	if (mr_u32(&r) != MLIX_VERSION) goto bad;
++	na = mr_u32(&r);
++	nb = mr_u32(&r);
++	nt = mr_u32(&r);
++	/* Each entry is at least a few bytes in the file, so a count bigger than
++	 * the file could hold is damage, caught before it is allocated. */
++	if (r.bad || na > r.n / 11 || nb > r.n / 11 || nt > r.n / 4) goto bad;
++	out->artists = calloc(na ? na : 1, sizeof *out->artists);
++	out->albums  = calloc(nb ? nb : 1, sizeof *out->albums);
++	out->tracks  = calloc(nt ? nt : 1, sizeof *out->tracks);
++	if (!out->artists || !out->albums || !out->tracks) goto bad;
++	for (i = 0; i < na && !r.bad; i++) {
++		ml_artist *ar = &out->artists[i];
++
++		mr_str(&r, ar->name, sizeof ar->name);
++		ar->first = (int)mr_u32(&r);
++		ar->n = (int)mr_u32(&r);
++		ar->book = mr_u8(&r) != 0;
++		if (!in_range(ar->first, ar->n, (int)nb)) r.bad = true;
++	}
++	for (i = 0; i < nb && !r.bad; i++) {
++		ml_album *al = &out->albums[i];
++		unsigned fl;
++
++		mr_str(&r, al->name, sizeof al->name);
++		al->first = (int)mr_u32(&r);
++		al->n = (int)mr_u32(&r);
++		fl = mr_u8(&r);
++		al->book = fl & 1;
++		al->singles = (fl >> 1) & 1;
++		al->playlist = (fl >> 2) & 1;
++		/* A playlist's tracks are copies at the end, so its range is checked
++		 * the same way: inside the tracks. */
++		if (!in_range(al->first, al->n, (int)nt)) r.bad = true;
++	}
++	for (i = 0; i < nt && !r.bad; i++) {
++		mr_str(&r, out->tracks[i].name, sizeof out->tracks[i].name);
++		mr_str(&r, out->tracks[i].path, sizeof out->tracks[i].path);
++	}
++	lo = mr_u32(&r);
++	hi = mr_u32(&r);
++	if (r.bad || r.at != r.n) goto bad;
++	out->nartists = (int)na;
++	out->nalbums = (int)nb;
++	out->ntracks = (int)nt;
++	h = ml_hash(out);
++	if ((h & 0xffffffffu) != lo || (h >> 32) != hi) goto bad;
++	free(b);
++	return true;
++bad:
++	free(b);
++	ml_free(out);
++	return false;
++}
++
+ /* ---- the shelf's orders ----------------------------------------------------- */
+ 
+ static const struct { const char *name, *label, *book; } ORDERS[ML_ORDERS] = {
 diff --git a/src/muselib.h b/src/muselib.h
-index 4ad477e..23d3d56 100644
+index 4ad477e..1f27fc1 100644
 --- a/src/muselib.h
 +++ b/src/muselib.h
 @@ -52,6 +52,12 @@ typedef struct {
@@ -2239,15 +3012,239 @@ index 4ad477e..23d3d56 100644
  bool ml_scan(const char *root, ml_lib *out);
  
  /* Both of a card's folders into one library: <card>/Music, then
+@@ -74,6 +80,23 @@ int ml_count_playlists(const ml_lib *l);
+ bool ml_playlist_resolve(const char *card, const char *line, char *out, size_t n);
+ void ml_free(ml_lib *lib);
+ 
++/* THE INDEX: a library as it was last read, kept in a file, so a boot can
++ * show it without reading every folder on the card. Reading the folders is
++ * the cost of a big library and not the CPU's: 19,023 tracks in 1,565 albums
++ * are 2,300 directory reads, 34 ms with the card's folders cached and 650 ms
++ * without on a desktop (2026-10-31) - and on the Pixel 2's SD card, cold, the
++ * "very slow" boot that was reported. The index is one file of names, about
++ * 130 bytes a track, read in one go.
++ *
++ * ml_save writes beside `path` and renames, so a cut leaves the old file or
++ * none; ml_load is false for anything it does not wholly trust - a missing,
++ * short, foreign or damaged file - and the caller reads the folders instead.
++ * ml_hash is the library in eight bytes, for asking whether a fresh read of
++ * the folders found what the index said without keeping both. */
++bool ml_save(const ml_lib *l, const char *path);
++bool ml_load(ml_lib *out, const char *path);
++unsigned long long ml_hash(const ml_lib *l);
++
+ /* Whether a file name is audio Muse plays, by extension. */
+ bool ml_is_audio(const char *name);
+ 
+diff --git a/src/platform.c b/src/platform.c
+index 1c08a98..4742be3 100644
+--- a/src/platform.c
++++ b/src/platform.c
+@@ -189,6 +189,78 @@ void plat_set_btn(in_state *st, in_button b, bool down)
+ 	st->down[b] = down;
+ }
+ 
++/* THE POWER BUTTON MEANS TWO THINGS, by how long it is held: a tap puts the
++ * device to sleep, and a hold of PLAT_POWER_HOLD_MS powers it off. Asked for
++ * 2026-10-16 - the tap had powered off, and a player wanted the Zune's
++ * pocket sleep on the one button made for it.
++ *
++ * Decided here, once, for every screen: the device file hands over the key's
++ * raw edges (plat_power_key) and the time (plat_power_tick), and IN_POWER is
++ * pressed only when the hold comes due. So each of the screens that power
++ * off on IN_POWER kept their code and now power off on the hold. A tap is
++ * known only when the key comes up before then, and is in_state's power_tap
++ * for that one poll - passed straight to the sleep main.c registers, if any.
++ *
++ * While a game or a child has the screen nothing polls input, and
++ * plat_power_watch reads the same state from the key's queue instead. */
++static bool   pk_down, pk_fired;
++static Uint32 pk_since;
++static void (*pk_on_tap)(in_state *st);
++static bool   pk_in_tap;
++
++/* One edge of the key. True when it was a tap. */
++static bool pk_edge(bool down)
++{
++	if (down) {
++		if (!pk_down) { pk_down = true; pk_fired = false; pk_since = SDL_GetTicks(); }
++		return false;
++	}
++	if (!pk_down) return false;      /* its press was flushed, or before boot */
++	pk_down = false;
++	return !pk_fired;
++}
++
++static bool pk_hold_due(void)
++{
++	if (!pk_down || pk_fired || SDL_GetTicks() - pk_since < PLAT_POWER_HOLD_MS) return false;
++	pk_fired = true;
++	return true;
++}
++
++void plat_power_key(in_state *st, bool down)
++{
++	bool was_fired = pk_fired && pk_down;
++
++	if (pk_edge(down)) st->power_tap = true;
++	else if (!down && was_fired) plat_set_btn(st, IN_POWER, false);
++}
++
++void plat_power_tick(in_state *st)
++{
++	if (pk_hold_due()) plat_set_btn(st, IN_POWER, true);
++	if (st->power_tap && pk_on_tap && !pk_in_tap) {
++		pk_in_tap = true;
++		st->power_tap = false;
++		pk_on_tap(st);
++		pk_in_tap = false;
++	}
++}
++
++void plat_power_forget(void) { pk_down = pk_fired = false; }
++
++void plat_on_power_tap(void (*fn)(in_state *st)) { pk_on_tap = fn; }
++
++static int pw_seen;
++static void pw_edge(bool down) { if (pk_edge(down)) pw_seen = PW_TAP; }
++
++int plat_power_watch(void)
++{
++	pw_seen = PW_NONE;
++	device_power_drain(pw_edge);
++	if (pk_hold_due()) return PW_HOLD;
++	return pw_seen;
++}
++
+ /* Set from main's SIGTERM handler. Surfaced here rather than checked at each
+  * call site because `quit_requested` is already polled by every loop in the
+  * program, so one assignment reaches all of them - including modal loops that
+@@ -291,14 +363,17 @@ int plat_run(char *const argv[], const char *const envkv[], const char *workdir)
+ 	/* Escape hatch: a core that dead-ends (a bad ROM, a missing BIOS) leaves
+ 	 * the child showing an error screen that eats no input. Watch the power
+ 	 * button while waiting and end the child on a press. */
+-	device_power_pressed();          /* drain stale events */
++	plat_power_watch();              /* drain stale events */
++	plat_power_forget();
+ 	int ms_since_term = -1;
+ 	for (;;) {
+ 		pid_t r = waitpid(pid, &status, WNOHANG);
+ 		if (r == pid) break;
+ 		if (r < 0) return -1;
+ 		usleep(100 * 1000);
+-		if (device_power_pressed() && ms_since_term < 0) {
++		/* The hold, as everywhere: a tap means sleep, and there is no sleeping
++		 * over a program the launcher cannot pause. */
++		if (plat_power_watch() == PW_HOLD && ms_since_term < 0) {
+ 			run_power_pressed = true;
+ 			kill(pid, SIGTERM);
+ 			ms_since_term = 0;
+diff --git a/src/platform.h b/src/platform.h
+index e8789ed..5efaf75 100644
+--- a/src/platform.h
++++ b/src/platform.h
+@@ -47,8 +47,16 @@ typedef struct {
+ 	Uint32 down_since[IN_COUNT];
+ 	Uint32 last_repeat[IN_COUNT];
+ 	bool   quit_requested;
++	bool   power_tap;           /* this poll only: power tapped (platform.c) */
+ } in_state;
+ 
++/* Power held this long powers off; a shorter tap is sleep. */
++#define PLAT_POWER_HOLD_MS 4000
++/* What a tap of power does, run from inside plat_input_poll so every screen
++ * has it: given the poll's state, which it leaves as the screen should find
++ * it on waking (IN_POWER pressed, for a hold that came during the sleep). */
++void plat_on_power_tap(void (*fn)(in_state *st));
++
+ bool plat_video_init(void);
+ void plat_video_quit(void);
+ SDL_Renderer *plat_renderer(void);
+@@ -126,6 +134,9 @@ bool plat_resident_send(const char *tag, const char *core, const char *rom,
+                         const char *preview,
+                         int console, const char *cheevos);
+ int  plat_resident_wait(void);
++/* After RES_PAUSED: whether the pause was power's tap asking for sleep rather
++ * than MENU asking for the menu. Asking clears it. */
++bool plat_resident_sleep_asked(void);
+ 
+ /* Called from inside plat_resident_wait when Diatom reports an achievement
+  * unlocked. A callback rather than a queue because the wait blocks: anything
+@@ -232,6 +243,15 @@ void plat_brightness_set(int level);
+  * 300, where a dark picture would leave the light burning. On comes back at
+  * the level it had. Nothing on the host. */
+ void plat_backlight(bool on);
++/* The CPU held at its slowest while the device sleeps, and given back its own
++ * governor on waking. Music still plays: a song decodes in a few percent of
++ * the slowest clock. Nothing where there is no governor to set. */
++void plat_cpu_saver(bool on);
++/* Power-off's backstop: from here the device is off within half a minute,
++ * whatever stalls on the way. The screen is dark from the moment power-off
++ * begins, so a launcher or shutdown that hung there looked off and drained
++ * the battery (reported 2026-10-31). Nothing on the host. */
++void plat_poweroff_backstop(void);
+ /* Headphones and the speaker want different volume ladders - the jack covers
+  * 61 dB where the speaker covers 45 - so the level has to be re-applied when a
+  * plug goes in or comes out, not merely at the next volume press. Call from a
+diff --git a/src/resident.c b/src/resident.c
+index 7e7adfc..af00b3c 100644
+--- a/src/resident.c
++++ b/src/resident.c
+@@ -558,13 +558,26 @@ static void d_apply_levels(void)
+ 	d_pend_vol = d_pend_bri = -1;
+ }
+ 
++/* A tap of power asked the game to pause, for the sleep and not the menu. */
++static int d_sleep_asked;
++
++bool plat_resident_sleep_asked(void)
++{
++	bool was = d_sleep_asked != 0;
++
++	d_sleep_asked = 0;
++	return was;
++}
++
+ static int diatom_wait(void)
+ {
+-	int sent_stop = 0;
++	int sent_stop = 0, pw;
+ 	unsigned stop_at = 0, start = plat_now_ms();
+ 	int autostop_s = getenv("TORTOS_AUTOSTOP_S") ? atoi(getenv("TORTOS_AUTOSTOP_S")) : 0;
+ 
+-	device_power_pressed();          /* drain stale presses */
++	plat_power_watch();              /* drain stale presses */
++	plat_power_forget();
++	d_sleep_asked = 0;
+ 
+ 	for (;;) {
+ 		char *l;
+@@ -665,7 +678,15 @@ static int diatom_wait(void)
+ 		 * see plat_resident_on_tick. */
+ 		if (d_on_tick) d_on_tick();
+ 
+-		if (device_power_pressed() && !sent_stop) {
++		/* Power: held, the game is stopped and the device goes off; tapped,
++		 * the game is paused for the launcher's sleep - PAUSED comes back
++		 * as for MENU, and plat_resident_sleep_asked tells the two apart. */
++		pw = plat_power_watch();
++		if (pw == PW_TAP && !sent_stop && !d_sleep_asked && d_got_running) {
++			d_sleep_asked = 1;
++			dsend("PAUSE");
++		}
++		if (pw == PW_HOLD && !sent_stop) {
+ 			plat_set_power_pressed(true);
+ 			sent_stop = 1;
+ 			stop_at = plat_now_ms();
 diff --git a/src/sys_menu.c b/src/sys_menu.c
-index 666711e..305db00 100644
+index 666711e..f6fc99b 100644
 --- a/src/sys_menu.c
 +++ b/src/sys_menu.c
 @@ -197,6 +197,7 @@ int sys_menu_build(const sys_ui *u, menu_row *out, menu_bufs *b,
  	full[PM_XFER]         = u->cable_xfer
  	                      ? (menu_row){ XFER_NAME_CABLE, NULL, true }
  	                      : (menu_row){ XFER_NAME_WIFI, NEEDS_WIFI(net), net };
-+	full[PM_SCREEN_OFF]   = (menu_row){ "Screen Off", "menu wakes", true };
++	full[PM_SCREEN_OFF]   = (menu_row){ "Screen Off", "power wakes", true };
  	full[PM_STATS]        = (menu_row){ "Play Time",  NULL,      true  };
  	/* On every device: the Brick takes its time from Wi-Fi, but the time zone
  	 * is chosen here on both. */
@@ -6167,10 +7164,10 @@ index 5917c7a..7b5c997 100644
  	n = gm_rows(&u, rows, &b);
  	printf("in-game menu, a game with no set:\n");
 diff --git a/tools/muselib-check.c b/tools/muselib-check.c
-index 5114799..3164366 100644
+index 5114799..53d0d51 100644
 --- a/tools/muselib-check.c
 +++ b/tools/muselib-check.c
-@@ -393,6 +393,58 @@ static void resolve(void)
+@@ -393,6 +393,117 @@ static void resolve(void)
  	}
  }
  
@@ -6226,14 +7223,74 @@ index 5114799..3164366 100644
 +	ml_free(&l);
 +}
 +
++/* The index: the card's library written, read back the same, and nothing
++ * read back from a file that is not wholly one. */
++static void index_file(void)
++{
++	char c[300], ix[320];
++	ml_lib l, back;
++	FILE *f;
++	long size;
++	unsigned char *b;
++	int i, same;
++
++	printf("the index\n");
++	snprintf(c, sizeof c, "%s/card", root);
++	snprintf(ix, sizeof ix, "%s/index.bin", root);
++	CHECK(ml_scan_card(c, &l), "the card from card() scans");
++	CHECK(ml_save(&l, ix), "written");
++	CHECK(ml_load(&back, ix), "read back");
++	same = back.nartists == l.nartists && back.nalbums == l.nalbums &&
++	       back.ntracks == l.ntracks && ml_hash(&back) == ml_hash(&l);
++	for (i = 0; same && i < l.ntracks; i++)
++		same = !strcmp(back.tracks[i].path, l.tracks[i].path) &&
++		       !strcmp(back.tracks[i].name, l.tracks[i].name);
++	for (i = 0; same && i < l.nalbums; i++)
++		same = back.albums[i].book == l.albums[i].book &&
++		       back.albums[i].first == l.albums[i].first &&
++		       !strcmp(back.albums[i].name, l.albums[i].name);
++	CHECK(same, "the same library: every artist, album, track and mark");
++	ml_free(&back);
++
++	/* Damage: a byte changed in a name, and the file cut short. */
++	f = fopen(ix, "rb");
++	fseek(f, 0, SEEK_END);
++	size = ftell(f);
++	fseek(f, 0, SEEK_SET);
++	b = malloc((size_t)size);
++	if (fread(b, 1, (size_t)size, f) != (size_t)size) { }
++	fclose(f);
++	b[size / 2] ^= 0x20;
++	f = fopen(ix, "wb"); fwrite(b, 1, (size_t)size, f); fclose(f);
++	CHECK(!ml_load(&back, ix) && back.ntracks == 0, "a changed byte is not believed");
++	b[size / 2] ^= 0x20;
++	f = fopen(ix, "wb"); fwrite(b, 1, (size_t)size - 3, f); fclose(f);
++	CHECK(!ml_load(&back, ix), "a short file is not believed");
++	f = fopen(ix, "wb"); fwrite("MLIX", 1, 4, f); fclose(f);
++	CHECK(!ml_load(&back, ix), "nor four bytes of one");
++	free(b);
++	snprintf(ix, sizeof ix, "%s/no-such-index.bin", root);
++	CHECK(!ml_load(&back, ix), "nor a file that is not there");
++
++	l.tracks[0].name[0] ^= 1;
++	{
++		unsigned long long h = ml_hash(&l);
++
++		l.tracks[0].name[0] ^= 1;
++		CHECK(h != ml_hash(&l), "a renamed track is another library to the hash");
++	}
++	ml_free(&l);
++}
++
  int main(void)
  {
  	char cmd[300];
-@@ -406,6 +458,7 @@ int main(void)
+@@ -406,6 +517,8 @@ int main(void)
  	orders();
  	card();
  	resolve();
 +	featured();
++	index_file();
  
  	snprintf(cmd, sizeof cmd, "rm -rf '%s'", root);
  	if (system(cmd) != 0) { }

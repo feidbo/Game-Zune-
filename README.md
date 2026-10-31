@@ -73,19 +73,33 @@ the time (see [Sources](#sources)):
   appears, "added to liked songs" shows for a moment, and the song goes on the end of a
   playlist called **liked songs**, first in **playlists**. Press Y again to unlike it and take it
   off. You can also like any song from its options (X) in a list.
-- **Pocket lock:** hold **START** for a second on Now Playing (or choose **lock screen** in its
-  options). "locked - press menu to wake" shows for a moment, then the screen goes dark and
-  **every button is ignored except MENU** - the d-pad, A/B/X/Y, START, volume, even power - so
-  nothing gets bumped in a pocket. The music keeps playing and headset buttons still work.
-  **MENU** wakes it; if MENU was only bumped and nothing else is pressed, it locks itself again
-  after 10 seconds. If the music stops, Auto Off still turns the Pixel 2 off to save the battery.
-  The screen is fully off while locked: the backlight is switched off and set to zero, and the
-  panel itself is powered down; your brightness comes back when you wake it. Each step is written
-  to the device log (**device → show device log** in the Windows app) if it ever stays lit.
-- **Screen Off (sleep):** the first row of **settings** turns the screen off at any time, with
-  or without music - the same as the pocket lock (only MENU wakes it, the music keeps playing,
-  it goes dark again 10 seconds after a wake unless you press something). With nothing playing,
-  Auto Off turns the Pixel 2 off after its usual time.
+- **Power button: tap to sleep, hold to turn off.** A quick tap of **power** puts the Pixel 2
+  to sleep from any screen: the screen goes completely dark (backlight off and set to zero,
+  and the panel itself powered down), the CPU drops to its slowest speed, and every button is
+  ignored **except the volume buttons**, so you can still turn the music up or down in a pocket.
+  The music keeps playing and headset buttons still work. **Tap power again to wake** - you're
+  back exactly where you were. **Hold power for 4 seconds** to turn the Pixel 2 off, from any
+  screen, asleep or not. If nothing is playing, Auto Off still turns it off after its usual
+  time.
+  - **In a game:** a tap pauses the game and sleeps; tap again and the game carries on from
+    the same frame. Holding power for 4 seconds saves the game and turns off, as before.
+  - **Pocket lock:** hold **START** for a second on Now Playing (or choose **lock screen** in
+    its options). "locked - tap power to wake" shows for a moment, then it's the same sleep.
+  - **Screen Off:** the first row of **settings** ("power wakes") is the same sleep too.
+  - Each step is written to the device log (**device → show device log** in the Windows app):
+    `sleep: screen off`, `backlight: off - ...`, `cpu: powersave while asleep`, `sleep: awake`.
+- **Turning off really turns off.** Power-off now has a backstop: if anything on the way down
+  stalls (the screen is already dark by then, so a stall looked "off" while it drained the
+  battery), the Pixel 2 cuts its own power 30 seconds later. Every step of the way out is
+  logged (`power: off ...`, `exit: closing`, `exit: done`), and a cut says `power: still on 30 s
+  after power-off; cutting the power` - look in **show device log** after the next power-on.
+- **Fast boot with a big library:** the launcher keeps a list of your library in
+  `.userdata/pixel2/muse-index.bin` and starts from it, instead of reading every folder under
+  Music at power-on - 19,000 songs are about 2,300 folders, which on an SD card is a long wait.
+  A few seconds after the menu is up it reads the folders again in the background, and if
+  anything changed (songs copied on, or removed by the Windows app) the music menus update by
+  themselves and the list is saved for the next boot. The first boot after installing still
+  reads the folders once, to make the list.
 - **Featured artists count as the artist:** a song by "The Beatles feat. Johnny" is listed under
   **The Beatles**, with their other albums - only "feat.", "ft." and "featuring" are split off, so
   "Simon & Garfunkel" stays one act. The Windows app also files new songs that way.
@@ -151,8 +165,9 @@ play/pause button and **B** its back button.
 | X | — | Game details | **Options** | Options |
 | Y | — | Favorite | — | **Like** (adds to liked songs) / unlike |
 | START | — | **Play now** | Play / pause | Play / pause (**hold: pocket lock**) |
+| POWER | **Tap: sleep** (tap again to wake) · **hold 4 s: off** | same | same | same |
 | SELECT | Music | Music | Close music | Close music |
-| MENU | TortOS menu (UI Theme and **Screen Off** are in here) | TortOS menu (**Sound: game / zune music**) | Music menu (rescan, lock…) | Music menu; **wakes the pocket lock** |
+| MENU | TortOS menu (UI Theme and **Screen Off** are in here) | TortOS menu (**Sound: game / zune music**) | Music menu (rescan, lock…) | Music menu |
 
 ---
 
@@ -468,13 +483,18 @@ Two patches, in `tortos-zune/patches/`, each building and passing TortOS's check
      browser, Now Playing's options and song list, liked songs, and reading `library.tsv` and
      `ratings.tsv`.
    - `src/main.c`: the top menu (**zune** / **game boy** / **settings**), the game boy menu, the
-     games list as a twist across the systems, Now Playing's Zune keys, the pocket lock (only
-     MENU wakes it), keeping the shelf in step when the theme changes, and `--theme`, `--sys`, `--sort`, `--zmusic` and `--zlevel` for the
+     games list as a twist across the systems, Now Playing's Zune keys, the sleep (a tap of power;
+     the pocket lock and Screen Off are it too) and the game's pause for it, the power-off
+     backstop and exit timings, the library index and its background check, keeping the shelf in step when the theme changes, and `--theme`, `--sys`, `--sort`, `--zmusic` and `--zlevel` for the
      screenshot harness.
    - `src/ui.*`: switching the menus' typeface at runtime, and flat panels.
    - `src/cards.h`: *Zune* as a third UI Theme, and the default.
    - `src/muselib.c`, `tools/muselib-check.c`: the music scan reads each folder entry's type
-     instead of a stat per file (fast on big libraries), and folds "feat." artists into the act.
+     instead of a stat per file (fast on big libraries), folds "feat." artists into the act, and
+     saves and loads the library index (`ml_save`, `ml_load`, `ml_hash`).
+   - `src/platform.c`, `src/device.h`, `src/device/*.c`, `src/resident.c`: the power button's
+     tap and 4-second hold, decided once for every screen and in a game; the CPU governor while
+     asleep; the power-off backstop.
    - `src/main.c`: `zune_splash_sync`, the boot animation swap (and back), after the first frame.
    - `src/device/*.c`: `TORTOS_FAKE_BATT=40c` fakes a charging battery for screenshots; on the
      Pixel 2 the backlight goes off by both `bl_power` and a level of 0.
